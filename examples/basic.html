@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nebula Dust Engine · minimal example</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #03030a; overflow: hidden; }
+    canvas { display: block; touch-action: none; }
+    p { position: fixed; left: 12px; bottom: 8px; margin: 0; color: #b9b0d6; font: 13px system-ui, sans-serif; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+        "nebula-dust-engine": "../src/all.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <p>Click to sow a new dust group · drag to touch the dust</p>
+  <script type="module">
+    import * as THREE from 'three';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+    import { createDustSystem, projectToViewPlane } from 'nebula-dust-engine';
+
+    const renderer = new THREE.WebGLRenderer();
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 8;
+    document.body.appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.01, 100);
+    camera.position.set(0, 0.6, 3.4);
+    camera.lookAt(0, 0, 0);
+
+    // Faint dust needs a HalfFloat buffer: EffectComposer gives one, OutputPass applies tone mapping.
+    const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType }));
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(new OutputPass());
+
+    const dust = createDustSystem({ renderer, lightReferenceSamples: 786432 });
+    scene.add(dust.object3d);
+    const nebula = dust.addGroup({ preset: 'orion', seed: 'my-nebula' });
+    dust.addGroup({ morphology: 'ring', palette: 'ionized', blending: 'additive', scale: 1.4, rotation: [-1.3, 0, 0] });
+
+    const ray = new THREE.Raycaster();
+    const at = (e) => { ray.setFromCamera({ x: e.clientX / innerWidth * 2 - 1, y: -(e.clientY / innerHeight) * 2 + 1 }, camera); return ray; };
+    let down = null;
+    addEventListener('pointerdown', (e) => { down = e; });
+    addEventListener('pointermove', (e) => { if (down) dust.touch(projectToViewPlane(at(e), camera, new THREE.Vector3()), { radius: 0.3, strength: 0.5 }); });
+    addEventListener('pointerup', (e) => {
+      if (down && Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) < 5) {
+        dust.sow(projectToViewPlane(at(e), camera, new THREE.Vector3()), { preset: 'crab', scale: 0.4 });
+      }
+      down = null;
+    });
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      composer.setSize(innerWidth, innerHeight);
+    });
+
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop(() => {
+      const dt = clock.getDelta();
+      dust.updateGroup(nebula, { rotation: [0, clock.elapsedTime * 0.05, 0] });
+      dust.update(camera, dt);
+      composer.render();
+    });
+  </script>
+</body>
+</html>
