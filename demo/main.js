@@ -1,3 +1,15 @@
+/**
+ * Nebula Dust Engine · the editor demo.
+ *
+ * The panel is ./panel.js, after guspira, the panel of spite's
+ * bumpy-metaballs-2026 (both MIT, credited in panel.css, the page and the
+ * README). The whole state lives in the URL hash as readable parameters
+ * (./hash.js) and the image goes through ./post.js (HalfFloat target, bloom,
+ * ACES, vignette, grain).
+ *
+ * Keys: ← → presets, R random look, Space pause, Tab hides the interface,
+ * F / double-click / double-tap fullscreen, 1–4 the modes.
+ */
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import {
@@ -10,9 +22,17 @@ import {
   MAX_GPU_SAMPLE_COUNT
 } from '../src/index.js';
 import {
-  createDustSystem, decodeDustScene, encodeDustScene, normalizeDustGroupSpec, projectToViewPlane, randomDustSeed
+  createDustSystem, decodeDustScene, encodeDustScene, projectToViewPlane, randomDustSeed
 } from '../src/system.js';
 import { DUST_EXAMPLE_SCENES } from '../src/examples.js';
+import { Panel, bindKey, unbindAllKeys, random } from './panel.js';
+import {
+  encodeHash, parseHash, presetScene, exampleView, parseSeed, printSeed, RENDER_SPEC, RENDER_DEFAULTS,
+  DEFAULT_SCENE, DEMO_RADIUS, GRAIN_OPTIONS, QUALITY_OPTIONS, BUDGET_OPTIONS
+} from './hash.js';
+import { createPost } from './post.js';
+
+const $ = (id) => document.getElementById(id);
 
 const renderer = new THREE.WebGLRenderer({
   antialias: false,
@@ -25,235 +45,154 @@ renderer.setPixelRatio(DPR_BASE);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x03030a, 1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-/* Exposición de la pasada de salida. Con 1,45 el pie de ACES se comía el polvo
- * tenue (por debajo de ~0,0015 lineal sale 0): medido con bench/lienzo8.py, con
- * 8 ningún objeto sale negro y apenas se satura nada. */
-const EXPOSICION = 8;
-renderer.toneMappingExposure = EXPOSICION;
-document.body.appendChild(renderer.domElement);
+$('container').appendChild(renderer.domElement);
 
-/* LA NUBE SE ACUMULA EN HALFFLOAT Y SE COMPONE AL LIENZO (28/9/2026)
- * El lienzo es de 8 bits y en lineal: una mota de alfa 0,004 suma menos de
- * medio nivel, se redondea a 0 y 4 millones de motas no pintaban nada (el
- * negro de producción). Y un ShaderMaterial no aplica ni el tonemap ni el
- * sRGB. Como en la app (EffectComposer): se dibuja en un búfer HalfFloat y
- * una pasada de salida aplica exposición + ACES + sRGB (OutputPass). */
-const bufer = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
-const salida = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
-  name: 'Salida del polvo',
-  uniforms: { tDiffuse: { value: bufer.texture } },
-  vertexShader: 'varying vec2 vUv;\nvoid main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-  fragmentShader: [
-    'uniform sampler2D tDiffuse;',
-    'varying vec2 vUv;',
-    'void main() {',
-    '  gl_FragColor = texture2D(tDiffuse, vUv);',
-    '  #include <tonemapping_fragment>',
-    '  #include <colorspace_fragment>',
-    '}'
-  ].join('\n'),
-  depthTest: false,
-  depthWrite: false
-}));
-salida.frustumCulled = false;
-const escenaSalida = new THREE.Scene();
-escenaSalida.add(salida);
-const camSalida = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-const tamBufer = new THREE.Vector2();
-function ajustaBufer() {
-  renderer.getDrawingBufferSize(tamBufer);
-  bufer.setSize(Math.max(1, tamBufer.x), Math.max(1, tamBufer.y));
-}
-ajustaBufer();
-/* Luz de referencia: cada grupo brilla igual con 16 k que con 4 M motas (la de
- * 786 432, el nivel alto de la app); más motas lo hacen más fino, no más claro. */
+/* The dust is drawn into a HalfFloat target and graded onto the canvas (post.js):
+ * an 8-bit canvas rounds the faint samples to 0 (the black of 28/9/2026). */
+const post = createPost(renderer);
+/* Reference light: each group shines the same with 16 k as with 4 M samples
+ * (the 786,432 of the "high" tier); more samples make it finer, not brighter. */
 const LUZ_REFERENCIA = DUST_SAMPLE_BUDGETS[3];
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.01, 100);
-/* El gizmo se dibuja aparte, encima y sin tonemap: dentro del búfer saldría quemado. */
+/* The gizmo is drawn on its own, on top and without grading: inside the target it would burn out. */
 const escenaGizmo = new THREE.Scene();
 
-/* ------------------------------------------------------------ textos */
-const DEMOS = {
-  orion: ['Orión (M42)', 'Nebulosa de emisión: gas ionizado por el Trapecio y polvo turbulento sin estructura radial.'],
-  eaglePillars: ['Pilares de la Creación (M16)', 'Cuatro columnas de polvo denso, cada una con su altura, anchura e inclinación.'],
-  horsehead: ['Cabeza de Caballo (B33)', 'Nube oscura: el polvo tapa lo que tiene detrás en vez de brillar.'],
-  crab: ['Cangrejo (M1)', 'Resto de supernova: filamentos que se abren desde el púlsar central.'],
-  ring: ['Anillo (M57)', 'Nebulosa planetaria vista casi de frente: un toro de gas ionizado.'],
-  helix: ['Hélice (NGC 7293)', 'La planetaria más cercana, con la paleta del James Webb.'],
-  lion: ['León (NGC 2392)', 'Campo continuo y turbulento, sin familias de radios periódicos.'],
-  interstellarDust: ['Polvo interestelar', 'Polvo difuso con una oscilación suave.'],
-  galaxyDust: ['Polvo galáctico', 'Brazos de polvo que giran alrededor del centro.'],
-  oortCloud: ['Nube de Oort', 'Cascarón esférico de cometas lejanos, en órbita lenta.'],
-  supernovaExplosion: ['Explosión de supernova', 'La eyecta nace en el centro y se abre; se reinicia sola al terminar.'],
-  whiteDwarfAccretion: ['Acreción en una enana blanca', 'Materia de la compañera que cae en espiral hacia la enana.'],
-  redSupergiantShell: ['Envoltura de Betelgeuse', 'Polvo de una supergigante roja: nudos sueltos y penachos (VLT/VISIR).'],
-  collidingWindPinwheel: ['Molinillo de WR 104', 'Dos vientos que chocan forman una espiral de polvo caliente (Keck).']
+/* ------------------------------------------------------------ texts */
+const PRESETS = {
+  orion: ['Orion Nebula (M42)', 'Emission nebula: gas ionized by the Trapezium and turbulent dust with no radial structure.'],
+  eaglePillars: ['Pillars of Creation (M16)', 'Four columns of dense dust, each with its own height, width and tilt.'],
+  horsehead: ['Horsehead (B33)', 'A dark cloud: the dust hides what is behind it instead of glowing.'],
+  crab: ['Crab Nebula (M1)', 'Supernova remnant: filaments opening out from the central pulsar.'],
+  ring: ['Ring Nebula (M57)', 'A planetary nebula seen almost face on: a torus of ionized gas.'],
+  helix: ['Helix Nebula (NGC 7293)', 'The nearest planetary nebula, in the James Webb palette.'],
+  lion: ['Lion (NGC 2392)', 'A continuous, turbulent field with no periodic families of spokes.'],
+  interstellarDust: ['Interstellar dust', 'Diffuse dust with a gentle drift.'],
+  galaxyDust: ['Galactic dust', 'Dust arms turning around the center.'],
+  oortCloud: ['Oort cloud', 'A spherical shell of distant comets in a slow orbit.'],
+  supernovaExplosion: ['Supernova explosion', 'The ejecta start at the center and expand; it starts again on its own.'],
+  whiteDwarfAccretion: ['White dwarf accretion', 'Matter from the companion spiralling onto the white dwarf.'],
+  redSupergiantShell: ['Betelgeuse dust shell', 'Dust from a red supergiant: loose knots and plumes (VLT/VISIR).'],
+  collidingWindPinwheel: ['WR 104 pinwheel', 'Two colliding winds wind hot dust into a spiral (Keck).']
 };
-const GRUPOS_PRESET = [
-  ['Nebulosas', ['orion', 'eaglePillars', 'horsehead', 'crab', 'ring', 'helix', 'lion']],
-  ['Polvo y fenómenos', ['interstellarDust', 'galaxyDust', 'oortCloud', 'supernovaExplosion', 'whiteDwarfAccretion']],
-  ['Polvo de estrellas', ['redSupergiantShell', 'collidingWindPinwheel']]
+const PRESET_GROUPS = [
+  ['Nebulae', ['orion', 'eaglePillars', 'horsehead', 'crab', 'ring', 'helix', 'lion']],
+  ['Dust and phenomena', ['interstellarDust', 'galaxyDust', 'oortCloud', 'supernovaExplosion', 'whiteDwarfAccretion']],
+  ['Stellar dust', ['redSupergiantShell', 'collidingWindPinwheel']]
 ];
-const ESCENAS = {
-  twinNebula: ['Nebulosa con dos grupos', 'Una nebulosa de emisión y, delante, una lámina de polvo oscuro que la tapa.'],
-  collision: ['Choque con restos', 'Dos grumos que chocan y la nube de restos y filamentos que sale del impacto.'],
-  diskRingHalo: ['Disco con anillo y halo', 'Un disco de acreción, un anillo inclinado y un halo tenue alrededor.']
+const SCENES = {
+  twinNebula: 'Emission nebula with a dark lane',
+  collision: 'Collision with debris',
+  diskRingHalo: 'Disk with a ring and a halo'
 };
-const ALIAS_ESCENA = { nebulosa: 'twinNebula', choque: 'collision', disco: 'diskRingHalo' };
-const FORMAS = {
-  diffuse: 'Difusa', orion: 'Orión', pillars: 'Pilares', horsehead: 'Cabeza de Caballo', crab: 'Filamentos (Cangrejo)',
-  ring: 'Anillo', bipolar: 'Bipolar', lion: 'León', galaxy: 'Espiral galáctica', oort: 'Cascarón (Oort)',
-  supernovaEjecta: 'Eyecta de supernova', whiteDwarfAccretion: 'Disco de acreción',
-  clumpyShell: 'Cáscara grumosa', pinwheel: 'Molinillo'
+const SHAPES = {
+  diffuse: 'Diffuse', orion: 'Orion', pillars: 'Pillars', horsehead: 'Horsehead', crab: 'Filaments (Crab)',
+  ring: 'Ring', bipolar: 'Bipolar', lion: 'Lion', galaxy: 'Spiral galaxy', oort: 'Shell (Oort)',
+  supernovaEjecta: 'Supernova ejecta', whiteDwarfAccretion: 'Accretion disk', clumpyShell: 'Clumpy shell', pinwheel: 'Pinwheel'
 };
-const PALETAS = {
-  webb: 'James Webb', orion: 'Orión', ionized: 'Gas ionizado', crab: 'Cangrejo', dark: 'Nube oscura',
-  galaxy: 'Galaxia', oort: 'Hielo (Oort)', supernova: 'Supernova', accretion: 'Acreción',
-  redSupergiant: 'Supergigante roja', hotDust: 'Polvo caliente'
+const PALETTES = {
+  webb: 'James Webb', orion: 'Orion', ionized: 'Ionized gas', crab: 'Crab', dark: 'Dark cloud', galaxy: 'Galaxy',
+  oort: 'Ice (Oort)', supernova: 'Supernova', accretion: 'Accretion', redSupergiant: 'Red supergiant', hotDust: 'Hot dust'
 };
-const PERFILES = { mist: 'Neblina', balanced: 'Equilibrado', dense: 'Denso', emissive: 'Emisivo' };
-const MOTAS = [
-  ['auto', 'Según la tarjeta'], ['16384', '16 384'], ['65536', '65 536'], ['262144', '262 144'],
-  ['500000', 'medio millón'], ['1000000', '1 millón'], ['2000000', '2 millones'], ['4000000', '4 millones']
+const VOLUMES = { mist: 'Mist', balanced: 'Balanced', dense: 'Dense', emissive: 'Emissive' };
+const SAMPLES = [
+  ['auto', 'Auto (by GPU)'], ['16384', '16,384'], ['65536', '65,536'], ['262144', '262,144'],
+  ['500000', '500,000'], ['1000000', '1 million'], ['2000000', '2 million'], ['4000000', '4 million']
 ];
-const GRANOS = [
-  ['1e6', 'un millón (10⁶)'], ['1e9', 'mil millones (10⁹)'], ['1e12', 'un billón (10¹²)'],
-  ['1e15', 'mil billones (10¹⁵)'], ['1e18', 'un trillón (10¹⁸)'], ['1e21', 'mil trillones (10²¹)'],
-  ['1e24', 'un cuatrillón (10²⁴)'], ['1e30', 'un quintillón (10³⁰)'], ['1e36', 'un sextillón (10³⁶)'],
-  ['masa', '0,03 masas solares de polvo']
+const GRAINS = {
+  '1e6': '10⁶ (a million)', '1e9': '10⁹', '1e12': '10¹²', '1e15': '10¹⁵', '1e18': '10¹⁸', '1e21': '10²¹',
+  '1e24': '10²⁴', '1e30': '10³⁰', '1e36': '10³⁶', mass: '0.03 solar masses'
+};
+const QUALITIES = {
+  auto: 'Auto (by GPU)', minimal: 'Minimal · 16 k', balanced: 'Balanced · 65 k', detailed: 'Detailed · 262 k',
+  high: 'High · 786 k', ultra: 'Ultra · 2 M'
+};
+const BUDGETS = {
+  4000000: '4 M (all)', 2000000: '2 M', 1000000: '1 M', 500000: '500 k', 250000: '250 k', 100000: '100 k'
+};
+const MODES = [
+  ['orbit', 'Orbit', 'Drag to orbit, tap a cloud to select it.'],
+  ['sow', 'Sow', 'Tap the scene to plant a new cloud there.'],
+  ['move', 'Move', 'Drag the gizmo to move, turn or scale the selected cloud; tap another cloud to switch.'],
+  ['touch', 'Touch', 'Drag over the dust to push it; it drifts back on its own.']
 ];
-const AYUDA = {
-  girar: 'Arrastra para girar la vista; toca un grupo para elegirlo. Rueda o pellizco: acercar.',
-  sembrar: 'Toca la escena para sembrar un grupo nuevo en ese punto.',
-  mover: 'Arrastra el gizmo para mover, girar o escalar el grupo elegido; toca otro grupo para cambiar.',
-  tocar: 'Arrastra sobre el polvo para empujarlo; vuelve solo a su sitio.'
+/* Shape parameters: key, label, min, max, step, default (the engine's). */
+const SHAPE_CONTROLS = {
+  clumpyShell: [
+    ['shellInner', 'Shell inner', 0, 0.98, 0.01, 0.55],
+    ['shellOuter', 'Shell outer', 0.01, 1.5, 0.01, 1],
+    ['clumpScale', 'Clump scale', 0.3, 12, 0.1, 2.2],
+    ['clumpContrast', 'Clump contrast', 0, 1, 0.01, 0.8],
+    ['plumeCount', 'Plumes', 0, 12, 1, 5],
+    ['plumeFraction', 'Plume share', 0, 0.5, 0.01, 0.08]
+  ],
+  pinwheel: [
+    ['spiralPitch', 'Spiral pitch', 0.05, 1.5, 0.01, null],
+    ['spiralPhase', 'Spiral phase', 0, 6.28, 0.01, 0],
+    ['spiralInner', 'Inner gap', 0, 0.9, 0.005, 0.015],
+    ['armWidth', 'Arm width', 0.005, 0.5, 0.005, 0.075],
+    ['coneOpening', 'Cone opening', 0, 1, 0.01, 0.1],
+    ['radialFade', 'Radial fade', 0, 20, 0.1, 2.2]
+  ]
 };
 const MOVIL = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-const RADIO_OBJETO = 1.12;
-
-/* ------------------------------------------------------------ controles */
-const $ = (id) => document.getElementById(id);
-const opcion = (sel, valor, texto, padre) => {
-  const o = document.createElement('option');
-  o.value = valor;
-  o.textContent = texto;
-  (padre || sel).appendChild(o);
-  return o;
-};
+const ESTRECHO = typeof matchMedia === 'function' && matchMedia('(max-width: 600px)').matches;
 const NOMBRES = listNebulaDustPresets();
-const presetSelect = $('preset');
-const siembraSelect = $('siembra');
-const puestos = new Set();
-for (const [titulo, claves] of GRUPOS_PRESET) {
-  const og = document.createElement('optgroup');
-  og.label = titulo;
-  const og2 = document.createElement('optgroup');
-  og2.label = titulo;
-  for (const k of claves.filter((c) => NOMBRES.includes(c))) {
-    opcion(presetSelect, k, DEMOS[k][0], og);
-    opcion(siembraSelect, k, DEMOS[k][0], og2);
-    puestos.add(k);
-  }
-  presetSelect.appendChild(og);
-  siembraSelect.appendChild(og2);
-}
-for (const k of NOMBRES.filter((c) => !puestos.has(c))) {
-  opcion(presetSelect, k, DEMOS[k] ? DEMOS[k][0] : k);
-  opcion(siembraSelect, k, DEMOS[k] ? DEMOS[k][0] : k);
-}
-{
-  const og = document.createElement('optgroup');
-  og.label = 'Solo la forma';
-  for (const k of DUST_MORPHOLOGIES) opcion(siembraSelect, 'forma:' + k, FORMAS[k] || k, og);
-  siembraSelect.appendChild(og);
-}
-siembraSelect.value = 'interstellarDust';
+const ORDEN_PRESETS = [...PRESET_GROUPS.flatMap(([, k]) => k).filter((k) => NOMBRES.includes(k)),
+  ...NOMBRES.filter((k) => !PRESET_GROUPS.some(([, l]) => l.includes(k)))];
+const nombrePreset = (k) => (PRESETS[k] ? PRESETS[k][0] : k);
+const GRADOS = 180 / Math.PI;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
-const selEscena = $('escena');
-opcion(selEscena, '', 'Elige un ejemplo…');
-for (const [k, [t]] of Object.entries(ESCENAS)) opcion(selEscena, k, t);
-
-const selMotas = $('motas'), selGranos = $('granos'), selForma = $('forma'), selPaleta = $('paleta');
-const selPerfil = $('perfil'), selMezcla = $('mezcla'), selAdapt = $('adaptativo');
-const selFps = $('fps'), selResolucion = $('resolucion'), selGiro = $('giro'), selSorteo = $('sorteo');
-for (const [v, t] of MOTAS) {
-  const o = opcion(selMotas, v, t);
-  if (MOVIL && Number(v) > 1000000) { o.disabled = true; o.textContent += ' (solo ordenador)'; }
+/* ------------------------------------------------------------ numbers */
+const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹', '-': '⁻' };
+function grande(n) {
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  if (n < 1e6) return Math.round(n).toLocaleString('en-US');
+  const e = Math.floor(Math.log10(n));
+  const m = n / Math.pow(10, e);
+  return m.toLocaleString('en-US', { maximumFractionDigits: 1 }) + ' × 10' + String(e).replace(/./g, (c) => SUP[c]);
 }
-for (const [v, t] of GRANOS) opcion(selGranos, v, t);
-opcion(selForma, '', 'La del objeto');
-for (const k of DUST_MORPHOLOGIES) opcion(selForma, k, FORMAS[k] || k);
-opcion(selPaleta, '', 'La de la forma');
-for (const k of DUST_PALETTES) opcion(selPaleta, k, PALETAS[k] || k);
-opcion(selPaleta, 'propia', 'Colores propios');
-opcion(selPerfil, '', 'El de la forma');
-for (const k of DUST_VOLUME_PROFILES) opcion(selPerfil, k, PERFILES[k] || k);
-opcion(selMezcla, '', 'La del objeto');
-opcion(selMezcla, 'normal', 'Polvo (tapa lo de detrás)');
-opcion(selMezcla, 'additive', 'Luz (se suma)');
-selMotas.value = 'auto';
-selGranos.value = '1e18';
+const corto = (n) => (n >= 1e6 ? (n / 1e6).toLocaleString('en-US', { maximumFractionDigits: 1 }) + ' M'
+  : n >= 1e3 ? Math.round(n / 1e3) + ' k' : String(n));
+const miles = (n) => Math.round(n).toLocaleString('en-US');
 
-const nav = $('ir');
-for (const k of Object.keys(ESCENAS)) {
-  const a = document.createElement('a');
-  a.href = '#' + k;
-  a.dataset.k = k;
-  a.textContent = ESCENAS[k][0];
-  nav.appendChild(a);
-}
-for (const k of NOMBRES) {
-  const a = document.createElement('a');
-  a.href = '#' + k;
-  a.dataset.k = k;
-  a.textContent = DEMOS[k] ? DEMOS[k][0].replace(/ \(.*\)$/, '') : k;
-  nav.appendChild(a);
-}
-
-const samples = $('samples'), status = $('status'), aviso = $('aviso'), hud = $('hud');
-const escala = $('escala'), flujo = $('flujo'), movimiento = $('movimiento');
-const opacidad = $('opacidad'), maxpx = $('maxpx'), exposicion = $('exposicion');
-const evolucion = $('evolucion'), bloqueExplosion = $('bloqueExplosion');
-const colores = $('colores');
-const pickers = [...colores.querySelectorAll('input')];
-const lista = $('grupos');
-exposicion.value = String(renderer.toneMappingExposure);
-if (MOVIL) {
-  $('info').classList.add('plegado');
-  $('plegar').textContent = 'Mostrar';
-  $('plegar').setAttribute('aria-expanded', 'false');
-}
-
-/* ------------------------------------------------------------ avisos de fallo
- * Si el shader no compila, o si el lienzo sale vacío tras montar la escena,
- * se dice en pantalla: un negro sin explicación no se puede diagnosticar. */
-const fallo = $('fallo');
+/* ------------------------------------------------------------ messages
+ * A shader that does not compile, or a canvas that comes out empty after a
+ * scene is mounted, is said on screen: an unexplained black cannot be diagnosed. */
+const fallo = $('error');
+const toast = $('toast');
 let falloShader = false;
-/* un aviso que no debe quitar la comprobación del lienzo (un enlace roto) */
+/* a message the canvas check must not clear (a broken link) */
 let falloFijo = false;
 function avisaFallo(texto) {
   fallo.textContent = texto;
   fallo.hidden = false;
 }
+let toastHasta = 0;
+function avisa(texto, ms = 3000) {
+  toast.textContent = texto;
+  toast.hidden = false;
+  const n = ++toastHasta;
+  if (ms) setTimeout(() => { if (n === toastHasta) toast.hidden = true; }, ms);
+}
 renderer.debug.checkShaderErrors = true;
 renderer.debug.onShaderError = (gl, program, vs, fs) => {
   const log = [gl.getProgramInfoLog(program), gl.getShaderInfoLog(vs), gl.getShaderInfoLog(fs)]
     .map((t) => String(t || '').trim()).filter(Boolean).join(' · ');
-  console.error('Nebula Dust Engine: el shader no compila', log);
+  console.error('Nebula Dust Engine: the shader does not compile', log);
   falloShader = true;
-  avisaFallo('El shader del polvo no compila en esta tarjeta: ' + (log.slice(0, 400) || 'sin detalle del navegador'));
+  avisaFallo('The dust shader does not compile on this GPU: ' + (log.slice(0, 400) || 'the browser gave no detail'));
 };
-/** Lee el lienzo recién compuesto (una vez por escena montada) y avisa si no hay nada. */
+/** Reads the freshly graded canvas (once per mounted scene) and says so if nothing shows. */
 function compruebaLienzo() {
   const gl = renderer.getContext();
   const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
   if (!w || !h || typeof gl.readPixels !== 'function') return;
   const px = new Uint8Array(w * h * 4);
   gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
-  /* el fondo es el píxel más oscuro; «vivo» es lo que sube 6 niveles sobre él */
+  /* the background is the darkest pixel; "alive" is 6 levels above it */
   let fondo = 255, vivos = 0, maximo = 0;
   for (let pasada = 0; pasada < 2; pasada++) {
     for (let y = 0; y < h; y += 2) {
@@ -264,55 +203,44 @@ function compruebaLienzo() {
     }
   }
   const vacio = sistema.size > 0 && vivos < 50 && maximo < fondo + 24;
-  if (vacio) avisaFallo('El lienzo ha quedado vacío: las motas se dibujan pero no llega a verse ninguna. Prueba más exposición, otro volumen o más motas.');
+  if (vacio) avisaFallo('The canvas came out empty: the samples are drawn but none of them shows. Try more exposure, another volume or more samples.');
   else if (!falloShader && !falloFijo) fallo.hidden = true;
   return { vivos, maximo, fondo, vacio };
 }
 
-/* ------------------------------------------------------------ números grandes */
-const SUP = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '-': '⁻' };
-function grande(n) {
-  if (!Number.isFinite(n) || n <= 0) return '—';
-  if (n < 1e6) return Math.round(n).toLocaleString('es-ES');
-  const e = Math.floor(Math.log10(n));
-  const m = n / Math.pow(10, e);
-  return m.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' × 10' + String(e).replace(/./g, (c) => SUP[c]);
-}
-const corto = (n) => (n >= 1e6 ? (n / 1e6).toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' M'
-  : n >= 1e3 ? Math.round(n / 1e3) + ' k' : String(n));
-const GRADOS = 180 / Math.PI;
-
-/* ------------------------------------------------------------ rendimiento */
-const fpsTope = () => Number(selFps.value) || 0;
-const escalaRes = () => Number(selResolucion.value) || 1;
-/** Umbral del sorteo de motas pequeñas (0 = se dibujan todas). */
-const minPx = () => (selSorteo.value === 'si' ? 0.5 : 0);
-
+/* ------------------------------------------------------------ render settings */
+const render = { ...RENDER_DEFAULTS };
+const fpsTope = () => Number(render.fps) || 0;
+const escalaRes = () => (render.halfres ? 0.5 : 1);
+const tierDe = (q) => (QUALITY_OPTIONS.indexOf(q) > 0 ? QUALITY_OPTIONS.indexOf(q) - 1 : undefined);
 function opcionesGranos() {
-  if (selGranos.value === 'masa') {
+  if (render.dustgrains === 'mass') {
     return { physicalGrainCount: undefined, dustMassSolar: 0.03, grainRadiusMicrons: 0.1, grainDensityKgM3: 3000 };
   }
-  return { physicalGrainCount: Number(selGranos.value), dustMassSolar: undefined };
+  return { physicalGrainCount: Number(render.dustgrains), dustMassSolar: undefined };
 }
 
-/* ------------------------------------------------------------ el sistema */
-/* estado del bucle (abajo): va aquí porque montar la escena ya pide un dibujo */
+/* ------------------------------------------------------------ the system */
+/* loop state (below): here because mounting a scene already asks for a frame */
 let pedido = 0;
 let sucio = true;
 let ultimoDibujo = 0;
 let ultimoRitmo = 0;
 let compruebaEn = 0;
+let pausado = false;
 const contador = { cuadros: 0, desde: 0, msCpu: 0, fps: 0, cpu: 0, gpu: null, dibujadas: 0, enviadas: 0 };
 const finExplosion = new Map();
 let sel = null;
-let modo = 'girar';
+let modo = 'orbit';
 let msGenerada = 0;
+/** The example the scene started from (the hash writes the groups against it), or null. */
+let escenaBase = null;
 
 const sistema = createDustSystem({
   renderer,
   adaptive: true,
-  /* el adaptativo apunta al tope de fps, y con cronómetro de GPU el polvo no
-   * pasa de la mitad del cuadro: no sube hasta llenar la tarjeta */
+  /* the adaptive LOD aims at the frame cap; with a GPU timer the dust stays
+   * under half the frame instead of filling the card */
   targetFrameMs: 1000 / 60,
   measureGpuTime: true,
   resolutionScale: 1,
@@ -322,11 +250,11 @@ const sistema = createDustSystem({
 });
 scene.add(sistema.object3d);
 
-/** El motor del grupo elegido (o null). */
+/** The engine of the selected group (or null). */
 const motor = () => (sel && sistema.getGroup(sel) ? sistema.getGroup(sel).engine : null);
 const spec = () => (sel && sistema.getGroup(sel) ? sistema.getGroup(sel).spec : null);
 
-/* ------------------------------------------------------------ cámara en órbita */
+/* ------------------------------------------------------------ orbit camera */
 const vista = { target: new THREE.Vector3(), azimuth: 0, elevation: 0, distance: 3.2 };
 function aplicaVista() {
   const c = Math.cos(vista.elevation);
@@ -338,6 +266,14 @@ function aplicaVista() {
   camera.lookAt(vista.target);
   camera.updateMatrixWorld();
 }
+const vistaJson = () => ({
+  target: vista.target.toArray().map((n) => Math.round(n * 1e4) / 1e4),
+  azimuth: Math.round(vista.azimuth * 1e4) / 1e4,
+  elevation: Math.round(vista.elevation * 1e4) / 1e4,
+  distance: Math.round(vista.distance * 1e4) / 1e4
+});
+/** The view the link carries: the one the user left, not where the auto-rotation is. */
+let vistaGuardada = vistaJson();
 function ponVista(v) {
   const t = v && Array.isArray(v.target) ? v.target : [0, 0, 0];
   vista.target.set(Number(t[0]) || 0, Number(t[1]) || 0, Number(t[2]) || 0);
@@ -345,13 +281,12 @@ function ponVista(v) {
   vista.elevation = Number.isFinite(v && v.elevation) ? THREE.MathUtils.clamp(v.elevation, -1.45, 1.45) : 0;
   vista.distance = Number.isFinite(v && v.distance) ? THREE.MathUtils.clamp(v.distance, 1.2, 14) : 3.2;
   aplicaVista();
+  vistaGuardada = vistaJson();
 }
-const vistaJson = () => ({
-  target: vista.target.toArray().map((n) => Math.round(n * 1e4) / 1e4),
-  azimuth: Math.round(vista.azimuth * 1e4) / 1e4,
-  elevation: Math.round(vista.elevation * 1e4) / 1e4,
-  distance: Math.round(vista.distance * 1e4) / 1e4
-});
+function fijaVista() {
+  vistaGuardada = vistaJson();
+  guardaHash();
+}
 ponVista(null);
 
 /* ------------------------------------------------------------ gizmo */
@@ -364,248 +299,683 @@ gizmo.addEventListener('change', () => pide());
 gizmo.addEventListener('objectChange', () => {
   if (!sel) return;
   sistema.captureTransform(sel);
-  panelTransformacion();
+  syncTransformacion();
   guardaHash();
   pide();
 });
 function colocaGizmo() {
   const g = sel ? sistema.getGroup(sel) : null;
-  if (modo === 'mover' && g) {
+  if (modo === 'move' && g) {
     if (gizmo.object !== g.object3d) gizmo.attach(g.object3d);
-    gizmo.setMode($('gizmo').value);
+    gizmo.setMode(ui.get('gizmo').get());
   } else if (gizmo.object) {
     gizmo.detach();
   }
 }
-/* Una nube regenerada es otro Object3D: el gizmo se engancha al nuevo. */
+/* A regenerated cloud is another Object3D: the gizmo moves to the new one. */
 sistema.on('rebuild', (e) => {
   compruebaEn = 1;
   if (e.id === sel) colocaGizmo();
 });
 
-/* ------------------------------------------------------------ panel del grupo */
-function nombreDe(s) {
-  if (!s) return '';
-  return s.name || s.id;
-}
+/* ------------------------------------------------------------ the panel */
+const gui = new Panel('Nebula Dust Engine', $('panel'), { storageKey: 'nebula-dust-demo' });
+const ui = gui.controllers;
+/* on a phone the panel starts folded, whatever was remembered */
+if (ESTRECHO || MOVIL) gui.setCollapsed(true, { save: false });
+const help = $('help');
+gui.rows.appendChild(help);
+help.hidden = false;
+gui.addSection('Keys', { key: 'keys', open: !MOVIL });
+const teclas = $('keys');
+teclas.hidden = false;
+gui.addElement(teclas, { key: 'keys-table' });
+gui.endSection();
 
+const presetOptions = () => [
+  ['', 'None (shape only)'],
+  ...PRESET_GROUPS.map(([group, keys]) => ({ group, items: keys.filter((k) => NOMBRES.includes(k)).map((k) => [k, nombrePreset(k)]) })),
+  ...NOMBRES.filter((k) => !PRESET_GROUPS.some(([, l]) => l.includes(k))).map((k) => [k, nombrePreset(k)])
+];
+gui.addSelect('Preset', '', presetOptions(), {
+  key: 'preset',
+  title: 'The look of the selected group. ← and → step through them; it keeps where the group is.',
+  onChange: (v) => cambiaPreset(v),
+  buttons: [
+    { label: '‹', key: 'preset-prev', title: 'Previous preset (←)', ariaLabel: 'Previous preset', onClick: () => pasoPreset(-1), before: true },
+    { label: '›', key: 'preset-next', title: 'Next preset (→)', ariaLabel: 'Next preset', onClick: () => pasoPreset(1) }
+  ]
+});
+gui.addSegmented('Mode', 'orbit', MODES.map(([v, t, h], i) => [v, t, h + ' (' + (i + 1) + ')']), {
+  key: 'mode', onChange: (v) => ponModo(v), randomizable: false
+});
+gui.addNote(MODES[0][2], { key: 'mode-help' });
+gui.addSelect('Sow', 'interstellarDust', [
+  ...PRESET_GROUPS.map(([group, keys]) => ({ group, items: keys.filter((k) => NOMBRES.includes(k)).map((k) => [k, nombrePreset(k)]) })),
+  { group: 'Shape only', items: DUST_MORPHOLOGIES.map((k) => ['shape:' + k, SHAPES[k] || k]) }
+], { key: 'sow', title: 'What a tap plants in Sow mode.', randomizable: false });
+gui.addSlider('Sow size', 0.45, 0.1, 2, 0.01, { key: 'sowsize', title: 'Scale of the clouds a tap plants.', randomizable: false });
+gui.addSegmented('Gizmo', 'translate', [['translate', 'Move'], ['rotate', 'Rotate'], ['scale', 'Scale']], {
+  key: 'gizmo', onChange: () => colocaGizmo(), randomizable: false
+});
+gui.addSlider('Touch radius', 0.3, 0.05, 1.5, 0.01, { key: 'touchradius', randomizable: false });
+gui.addSlider('Touch strength', 0.45, 0.05, 1.5, 0.01, { key: 'touchstrength', randomizable: false });
+
+/* Scene */
+gui.addTab('Scene');
+gui.addSection('Examples', { key: 'examples' });
+gui.addSelect('Example', '', [['', 'Choose an example…'], ...Object.entries(SCENES)], {
+  key: 'example', title: 'Scenes made of several groups.', randomizable: false,
+  onChange: (v) => { if (v) cargaEjemplo(v); }
+});
+gui.addButtons([
+  { label: 'Save JSON', key: 'save', title: 'Download the scene as a JSON file', onClick: () => guardar() },
+  { label: 'Load JSON', key: 'load', title: 'Open a scene file', onClick: () => { const f = $('file'); if (typeof f.click === 'function') f.click(); } }
+]);
+gui.addButtons([
+  { label: 'Copy link', key: 'link', title: 'Copy the address: the whole scene is in it', onClick: () => copiaEnlace() },
+  { label: 'Clear', key: 'clear', title: 'Remove every group', onClick: () => vaciar() }
+]);
+gui.addSection('Groups', { key: 'groups' });
+const lista = document.createElement('ul');
+lista.className = 'group-list';
+lista.id = 'group-list';
+lista.setAttribute('aria-label', 'Dust groups');
+gui.addElement(lista, { key: 'group-list' });
+gui.addButtons([
+  { label: 'Add', key: 'add', title: 'A group of the current preset at the center of the view', onClick: () => anadir() },
+  { label: 'Duplicate', key: 'duplicate', title: 'A copy with another seed', onClick: () => duplicar() },
+  { label: 'Hide', key: 'hide', onClick: () => ocultar() },
+  { label: 'Delete', key: 'delete', onClick: () => borrar() }
+]);
+gui.addSection('View', { key: 'view' });
+gui.addCheckbox('Auto-rotate', render.spin, { key: 'spin', title: 'Off, a still scene costs the GPU nothing.', onChange: (v) => aplicaRender({ spin: v }) });
+gui.addSelect('Layers', render.layers, [['all', 'All'], ['0', 'Only 0'], ['1', 'Only 1'], ['2', 'Only 2'], ['3', 'Only 3']], {
+  key: 'layers', title: 'Which layers the camera sees.', randomizable: false, onChange: (v) => aplicaRender({ layers: v })
+});
+gui.addButtons([{ label: 'Reset view', key: 'resetview', onClick: () => restableceVista() }]);
+
+/* Group */
+gui.addTab('Group');
+const notaGrupo = gui.addNote('No groups: press Add or sow one in the scene.', { key: 'nogroup' });
+const secciones = [];
+secciones.push(gui.addSection('Look', { key: 'look' }));
+gui.addNote('', { key: 'about' });
+gui.addText('Name', '', { key: 'name', maxLength: 120, onChange: (v) => cambia({ name: v.trim() || null }) });
+gui.addText('Seed', '', {
+  key: 'seed',
+  title: 'The same seed always grows the same cloud. Digits are a number, anything else is hashed.',
+  onChange: (v) => { const s = parseSeed(v); if (s !== undefined) cambia({ seed: s }, true); },
+  button: { label: 'New', key: 'newseed', title: 'A new random seed', onClick: () => cambia({ seed: randomDustSeed() }, true) }
+});
+gui.addSelect('Samples', 'auto', SAMPLES.map(([v, t]) => (MOVIL && Number(v) > 1000000 ? [v, t + ' (desktop only)', true] : [v, t])), {
+  key: 'samples', title: 'GPU samples of this group; the scene shares its budget between groups.', randomizable: false,
+  onChange: (v) => cambia({ count: v === 'auto' ? null : Number(v) }, true)
+});
+gui.addSelect('Shape', '', [['', "The preset's"], ...DUST_MORPHOLOGIES.map((k) => [k, SHAPES[k] || k])], {
+  key: 'shape',
+  onChange: (v) => {
+    const s = spec();
+    cambia({ morphology: v || (s && s.preset ? nebulaDustOptions(s.preset).morphology : 'diffuse') }, true);
+  }
+});
+for (const [morfologia, filas] of Object.entries(SHAPE_CONTROLS)) {
+  for (const [k, label, min, max, step, def] of filas) {
+    gui.addSlider(label, def ?? min, min, max, step, {
+      key: 'shape-' + k, title: SHAPES[morfologia] + ' parameter.',
+      onChange: (v) => cambia({ shape: { [k]: v } }, true)
+    });
+  }
+  if (morfologia === 'pinwheel') {
+    gui.addSegmented('Sense', '1', [['1', '+1'], ['-1', '−1']], {
+      key: 'shape-spiralSense', title: 'Which way the spiral winds.',
+      onChange: (v) => cambia({ shape: { spiralSense: Number(v) } }, true)
+    });
+  }
+}
+secciones.push(gui.addSection('Color', { key: 'color' }));
+gui.addSelect('Palette', '', [['', "The shape's"], ...DUST_PALETTES.map((k) => [k, PALETTES[k] || k]), ['custom', 'Custom colors']], {
+  key: 'palette',
+  onChange: (v) => {
+    if (v === 'custom') cambia({ colors: ui.get('colors').get() });
+    else cambia({ palette: v || null });
+  }
+});
+gui.addColors('Colors', ['#ffffff', '#ffffff', '#ffffff', '#ffffff'], { key: 'colors', onChange: (list) => cambia({ colors: list }) });
+gui.addColor('Tint', '#ffffff', { key: 'tint', title: 'Multiplies every color of the group.', onChange: (v) => cambia({ tint: v }) });
+secciones.push(gui.addSection('Material', { key: 'material' }));
+gui.addSelect('Volume', '', [['', "The shape's"], ...DUST_VOLUME_PROFILES.map((k) => [k, VOLUMES[k] || k])], {
+  key: 'volume', title: 'How the density falls off: mist, balanced, dense or emissive.',
+  onChange: (v) => cambia({ volumeProfile: v || null }, true)
+});
+gui.addSegmented('Blend', 'normal', [['normal', 'Dust', 'Hides what is behind it'], ['additive', 'Light', 'Adds up like glowing gas']], {
+  key: 'blend', onChange: (v) => cambia({ blending: v })
+});
+gui.addSlider('Opacity', 0.86, 0, 1, 0.01, { key: 'opacity', range: [0.3, 1], onChange: (v) => cambia({ opacity: v }) });
+gui.addSlider('Sample size', 1, 0.2, 3, 0.01, { key: 'size', range: [0.5, 2], onChange: (v) => cambia({ size: v }) });
+gui.addSlider('Max point size', 3.8, 0.5, 16, 0.1, { key: 'maxpx', range: [1.5, 8], title: 'Largest a sample can be drawn, in pixels.', onChange: (v) => cambia({ maxPointSize: v }) });
+secciones.push(gui.addSection('Transform', { key: 'transform' }));
+for (const [i, eje] of ['X', 'Y', 'Z'].entries()) {
+  gui.addSlider('Position ' + eje, 0, -4, 4, 0.01, { key: 'pos' + eje.toLowerCase(), range: [-1, 1], onChange: (v) => mueveEje('position', i, v) });
+}
+for (const [i, eje] of ['X', 'Y', 'Z'].entries()) {
+  gui.addSlider('Rotation ' + eje, 0, -180, 180, 1, { key: 'rot' + eje.toLowerCase(), onChange: (v) => mueveEje('rotation', i, v / GRADOS) });
+}
+gui.addSlider('Scale', 1, 0.05, 4, 0.01, { key: 'scale', range: [0.4, 2], onChange: (v) => escalaGrupo(v) });
+gui.addSlider('Order', 1, 0, 10, 1, { key: 'order', title: 'Draw order: higher is drawn later, on top.', randomizable: false, onChange: (v) => cambia({ order: v }) });
+gui.addSegmented('Layer', '0', [['0', '0'], ['1', '1'], ['2', '2'], ['3', '3']], {
+  key: 'layer', title: 'Camera layer of the group (see View · Layers).', randomizable: false, onChange: (v) => cambia({ layer: Number(v) })
+});
+secciones.push(gui.addSection('Motion', { key: 'motion' }));
+gui.addSlider('Flow', 0, 0, 4, 0.01, { key: 'flow', range: [0, 1.5], title: 'Orbits and infall of the disks, arms and shells.', onChange: (v) => cambia({ flowSpeed: v }) });
+gui.addSlider('Turbulence', 0, 0, 1, 0.01, { key: 'turbulence', range: [0, 0.5], onChange: (v) => cambia({ motion: v }) });
+gui.addSlider('Explosion', 1, 0, 1, 0.001, { key: 'explosion', title: 'How far the ejecta have gone.', onChange: (v) => mueveExplosion(v) });
+gui.addButtons([{ label: 'Restart explosion', key: 'restart', onClick: () => reiniciaExplosion() }]);
+gui.endSection();
+gui.addButtons([{ label: 'Reset group', key: 'resetgroup', title: "Back to the preset's values; keeps where it is", onClick: () => restableceGrupo() }]);
+
+/* Render */
+gui.addTab('Render');
+gui.addSection('Quality', { key: 'quality' });
+gui.addSelect('Quality', render.quality, QUALITY_OPTIONS.map((q, i) => (MOVIL && i > 2 ? [q, QUALITIES[q] + ' (desktop only)', true] : [q, QUALITIES[q]])), {
+  key: 'quality', title: "Samples per group when a group's count is Auto.", randomizable: false,
+  onChange: (v) => aplicaRender({ quality: v })
+});
+gui.addSelect('Sample budget', String(render.budget), BUDGET_OPTIONS.map((b) => [b, BUDGETS[b]]), {
+  key: 'budget', title: 'The most samples the whole scene holds; groups share it in proportion.', randomizable: false,
+  onChange: (v) => aplicaRender({ budget: Number(v) })
+});
+gui.addCheckbox('Adaptive', render.adaptive, { key: 'adaptive', title: 'Draw fewer samples when a frame runs late (the light is kept).', onChange: (v) => aplicaRender({ adaptive: v }) });
+gui.addSelect('Frame cap', String(render.fps), [['30', '30 fps'], ['60', '60 fps'], ['120', '120 fps'], ['0', 'Off']], {
+  key: 'fps', randomizable: false, onChange: (v) => aplicaRender({ fps: Number(v) })
+});
+gui.addCheckbox('Half resolution', render.halfres, { key: 'halfres', title: 'A quarter of the pixels.', onChange: (v) => aplicaRender({ halfres: v }) });
+gui.addCheckbox('Cull tiny samples', render.cull, { key: 'cull', title: 'Draw a share of the samples under half a pixel, with the same light: faster, a little grainier.', onChange: (v) => aplicaRender({ cull: v }) });
+gui.addSelect('Dust grains', render.dustgrains, GRAIN_OPTIONS.map((g) => [g, GRAINS[g] || g]), {
+  key: 'dustgrains', title: 'How many real grains the samples stand for (shown in Stats).', randomizable: false,
+  onChange: (v) => aplicaRender({ dustgrains: v })
+});
+gui.addSection('Post', { key: 'post' });
+const R = RENDER_SPEC;
+gui.addSlider('Exposure', render.exposure, R.exposure.min, R.exposure.max, R.exposure.step, { key: 'exposure', range: [4, 14], onChange: (v) => aplicaRender({ exposure: v }) });
+gui.addCheckbox('ACES tone mapping', render.aces, { key: 'aces', title: 'Filmic curve; off, the light is clipped.', onChange: (v) => aplicaRender({ aces: v }) });
+gui.addSlider('Bloom', render.bloom, R.bloom.min, R.bloom.max, R.bloom.step, { key: 'bloom', range: [0, 1.2], title: 'Glow around the bright parts. At 0 it costs nothing.', onChange: (v) => aplicaRender({ bloom: v }) });
+gui.addSlider('Bloom radius', render.bloomradius, R.bloomradius.min, R.bloomradius.max, R.bloomradius.step, { key: 'bloomradius', onChange: (v) => aplicaRender({ bloomradius: v }) });
+gui.addSlider('Bloom threshold', render.bloomthreshold, R.bloomthreshold.min, R.bloomthreshold.max, R.bloomthreshold.step, { key: 'bloomthreshold', range: [0.4, 2], onChange: (v) => aplicaRender({ bloomthreshold: v }) });
+gui.addSlider('Grain', render.grain, R.grain.min, R.grain.max, R.grain.step, { key: 'grain', range: [0, 0.05], onChange: (v) => aplicaRender({ grain: v }) });
+gui.addSlider('Vignette', render.vignette, R.vignette.min, R.vignette.max, R.vignette.step, { key: 'vignette', range: [0, 0.6], onChange: (v) => aplicaRender({ vignette: v }) });
+gui.endSection();
+gui.addButtons([{ label: 'Reset render', key: 'resetrender', onClick: () => restableceRender() }]);
+
+/* Stats */
+gui.addTab('Stats');
+gui.addStat('FPS', { key: 'fpsnow', title: 'Frames drawn per second; idle when nothing changes and the GPU rests.' });
+gui.addStat('CPU', { key: 'cpu', title: 'CPU time per drawn frame.' });
+gui.addStat('GPU', { key: 'gpu', title: 'GPU time per frame (timer query), when the driver reports it.' });
+gui.addStat('Drawn', { key: 'drawn', title: 'Samples that reach a pixel this frame.' });
+gui.addStat('Sent', { key: 'sent', title: 'Samples sent to the GPU; the light is kept when fewer are sent.' });
+gui.addStat('Samples', { key: 'allocated', title: 'Samples in the scene and its budget.' });
+gui.addMonitor('Groups', { key: 'groups' });
+gui.addMonitor('Grains', { key: 'grains', title: 'Real dust grains the selected group stands for.' });
+gui.addMonitor('Grains per sample', { key: 'pergrain' });
+gui.addMonitor('GPU tier', { key: 'tier' });
+gui.addMonitor('Generated in', { key: 'generated', title: 'Time to grow the selected cloud.' });
+const stat = (k) => ui.get(k);
+
+/* ------------------------------------------------------------ panel ← state */
 function pintaLista() {
   lista.textContent = '';
   for (const g of sistema.listGroups()) {
     const li = document.createElement('li');
-    li.dataset.grupo = g.id;
-    if (g.id === sel) li.classList.add('activo');
-    if (!g.visible) li.classList.add('oculto');
+    li.dataset.group = g.id;
+    if (g.id === sel) li.classList.add('active');
+    if (!g.visible) li.classList.add('off');
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'elegir';
-    b.dataset.accion = 'elegir';
+    b.className = 'group-pick';
+    b.dataset.action = 'pick';
     b.textContent = g.name + ' · ' + corto(g.sampleCount);
     const v = document.createElement('button');
     v.type = 'button';
-    v.className = 'ver';
-    v.dataset.accion = 'ver';
-    v.textContent = g.visible ? 'Ocultar' : 'Mostrar';
+    v.className = 'group-eye';
+    v.dataset.action = 'eye';
+    v.textContent = g.visible ? 'Hide' : 'Show';
+    v.setAttribute('aria-label', (g.visible ? 'Hide ' : 'Show ') + g.name);
     li.appendChild(b);
     li.appendChild(v);
     lista.appendChild(li);
   }
   const s = spec();
-  $('ocultar').textContent = s && !s.visible ? 'Mostrar' : 'Ocultar';
-  for (const id of ['duplicar', 'borrar', 'ocultar']) $(id).disabled = !s;
+  ui.get('hide').setLabel(s && !s.visible ? 'Show' : 'Hide');
+  for (const k of ['duplicate', 'hide', 'delete']) ui.get(k).setDisabled(!s);
 }
 
-function panelTransformacion() {
+function syncTransformacion() {
   const s = spec();
   if (!s) return;
-  $('posX').value = String(s.position[0]);
-  $('posY').value = String(s.position[1]);
-  $('posZ').value = String(s.position[2]);
-  $('rotX').value = String(Math.round(s.rotation[0] * GRADOS));
-  $('rotY').value = String(Math.round(s.rotation[1] * GRADOS));
-  $('rotZ').value = String(Math.round(s.rotation[2] * GRADOS));
-  $('tamGrupo').value = String(Math.max(...s.scale.map(Math.abs)));
+  ['x', 'y', 'z'].forEach((e, i) => {
+    ui.get('pos' + e).set(s.position[i]);
+    ui.get('rot' + e).set(Math.round(s.rotation[i] * GRADOS));
+  });
+  ui.get('scale').set(Math.max(...s.scale.map(Math.abs)));
 }
 
-/** Rellena el panel con los valores del grupo elegido. */
-function panelDesdeGrupo() {
+function explosionVisible(s) {
+  return Boolean(s) && (s.evolutionRate > 0 || s.morphology === 'supernovaEjecta');
+}
+
+/** Every control of the Group tab from the selected group's spec. */
+function syncGrupo() {
   const s = spec();
   pintaLista();
-  if (!s) {
-    $('que').textContent = 'No hay ningún grupo: añade uno o siembra en la escena.';
-    return;
+  gui.setSubtitle(s ? s.name : '');
+  notaGrupo.setHidden(Boolean(s));
+  for (const sec of secciones) sec.setHidden(!s);
+  ui.get('resetgroup').setHidden(!s);
+  ui.get('preset').set(s ? s.preset || '' : '');
+  if (!s) return;
+  ui.get('about').set(s.preset && PRESETS[s.preset] ? PRESETS[s.preset][1] : (SHAPES[s.morphology] || s.morphology) + ', no preset.');
+  ui.get('name').set(s.name);
+  ui.get('seed').set(printSeed(s.seed));
+  const muestras = ui.get('samples');
+  if (s.count && !muestras.options().some((o) => o.value === String(s.count))) {
+    muestras.setOptions([...SAMPLES.map(([v, t]) => (MOVIL && Number(v) > 1000000 ? [v, t, true] : [v, t])), [String(s.count), miles(s.count)]]);
   }
-  $('nombre').value = nombreDe(s);
-  presetSelect.value = s.preset || '';
-  $('que').textContent = s.preset && DEMOS[s.preset] ? DEMOS[s.preset][1] : (FORMAS[s.morphology] || s.morphology);
-  $('semillaTxt').value = String(s.seed);
-  if (s.count && ![...selMotas.querySelectorAll('option')].some((o) => o.value === String(s.count))) {
-    opcion(selMotas, String(s.count), s.count.toLocaleString('es-ES'));
+  muestras.set(s.count ? String(s.count) : 'auto');
+  ui.get('shape').set(s.morphology);
+  for (const [morfologia, filas] of Object.entries(SHAPE_CONTROLS)) {
+    for (const [k, , , , , def] of filas) {
+      const c = ui.get('shape-' + k);
+      c.setHidden(s.morphology !== morfologia);
+      const d = k === 'spiralPitch' ? s.radius / 3 : def;
+      c.set(k in s.shape ? s.shape[k] : d);
+    }
   }
-  selMotas.value = s.count ? String(s.count) : 'auto';
-  selForma.value = s.morphology;
-  selPaleta.value = s.palette === 'custom' ? 'propia' : s.palette;
-  colores.hidden = s.palette !== 'custom';
-  const stops = s.palette === 'custom' ? s.colors : (getDustPalette(s.palette) || []).map(dustColorToHex);
-  pickers.forEach((p, i) => { if (stops.length) p.value = stops[Math.min(i, stops.length - 1)]; });
-  $('tinte').value = s.tint;
-  selPerfil.value = s.volumeProfile;
-  selMezcla.value = s.blending;
-  opacidad.value = String(s.opacity);
-  escala.value = String(s.size);
-  maxpx.value = String(s.maxPointSize);
-  flujo.value = String(s.flowSpeed);
-  movimiento.value = String(s.motion);
-  $('orden').value = String(s.order);
-  $('capa').value = String(s.layer);
-  panelTransformacion();
-  bloqueExplosion.hidden = !(s.evolutionRate > 0 || s.morphology === 'supernovaEjecta');
+  ui.get('shape-spiralSense').setHidden(s.morphology !== 'pinwheel');
+  ui.get('shape-spiralSense').set(s.shape.spiralSense < 0 ? '-1' : '1');
+  ui.get('palette').set(s.palette);
+  ui.get('colors').setHidden(s.palette !== 'custom');
+  ui.get('colors').set(s.palette === 'custom' ? s.colors : (getDustPalette(s.palette) || []).map(dustColorToHex));
+  ui.get('tint').set(s.tint);
+  ui.get('volume').set(s.volumeProfile);
+  ui.get('blend').set(s.blending);
+  ui.get('opacity').set(s.opacity);
+  ui.get('size').set(s.size);
+  ui.get('maxpx').set(s.maxPointSize);
+  syncTransformacion();
+  ui.get('order').set(s.order);
+  ui.get('layer').set(String(s.layer));
+  ui.get('flow').set(s.flowSpeed);
+  ui.get('turbulence').set(s.motion);
+  const hayExplosion = explosionVisible(s);
+  ui.get('explosion').setHidden(!hayExplosion);
+  ui.get('restart').setHidden(!hayExplosion);
   const e = motor();
-  if (e) evolucion.value = String(e.getStatus().evolution);
-  pintaMuestras();
+  if (e) ui.get('explosion').set(e.getStatus().evolution);
 }
 
-function pintaMuestras() {
-  const e = motor();
-  const st = sistema.getStatus();
-  if (!e) { samples.textContent = 'Motas en la GPU: 0'; return; }
-  const md = e.metadata;
-  samples.textContent = 'Grupo: ' + md.sampleCount.toLocaleString('es-ES') + ' motas'
-    + (msGenerada ? ' (generadas en ' + Math.round(msGenerada) + ' ms)' : '')
-    + ' · escena: ' + st.allocatedSamples.toLocaleString('es-ES') + ' de ' + st.maxTotalSamples.toLocaleString('es-ES')
-    + (st.requestedSamples > st.maxTotalSamples ? ' (reparto proporcional)' : '')
-    + ' · granos reales: ' + grande(md.physicalGrainCount)
-    + ' · cada mota representa ' + grande(md.grainsPerSample) + ' granos'
-    + ' · tarjeta: nivel ' + md.gpuProfile.tier;
+function syncRender() {
+  for (const k of ['exposure', 'bloom', 'bloomradius', 'bloomthreshold', 'grain', 'vignette']) ui.get(k).set(render[k]);
+  for (const k of ['aces', 'adaptive', 'halfres', 'cull', 'spin']) ui.get(k).set(render[k]);
+  ui.get('quality').set(render.quality);
+  ui.get('budget').set(String(render.budget));
+  ui.get('fps').set(String(render.fps));
+  ui.get('dustgrains').set(render.dustgrains);
+  ui.get('layers').set(render.layers);
+}
+
+function syncModo() {
+  ui.get('mode').set(modo);
+  ui.get('mode-help').set(MODES.find((m) => m[0] === modo)[2]);
+  ui.get('sow').setHidden(modo !== 'sow');
+  ui.get('sowsize').setHidden(modo !== 'sow');
+  ui.get('gizmo').setHidden(modo !== 'move');
+  ui.get('touchradius').setHidden(modo !== 'touch');
+  ui.get('touchstrength').setHidden(modo !== 'touch');
 }
 
 function elige(id) {
   sel = id && sistema.getGroup(id) ? id : (sistema.listGroups()[0]?.id || null);
   colocaGizmo();
-  panelDesdeGrupo();
+  syncGrupo();
   pide();
 }
 
-/** Cambia el grupo elegido. `pesado` = regenera motas (se avisa si son millones). */
+/** Changes the selected group. `pesado` = it regenerates samples (said when it is millions). */
 function cambia(patch, pesado = false) {
   if (!sel) return;
   const hazlo = () => {
     const t0 = performance.now();
     sistema.updateGroup(sel, patch);
     if (pesado) msGenerada = performance.now() - t0;
-    panelDesdeGrupo();
+    syncGrupo();
     guardaHash();
     pide();
   };
-  /* solo si se piden de forma explícita un millón o más (como antes con el selector de motas) */
+  /* only when a million or more are asked for explicitly */
   const n = 'count' in patch ? (patch.count || 0) : ((spec() && spec().count) || 0);
   if (pesado && n >= 1000000) {
-    aviso.hidden = false;
-    aviso.textContent = 'Generando ' + n.toLocaleString('es-ES') + ' motas…';
-    setTimeout(() => { hazlo(); aviso.hidden = true; }, 30);
+    avisa('Generating ' + miles(n) + ' samples…', 0);
+    setTimeout(() => { hazlo(); toast.hidden = true; }, 30);
   } else {
     hazlo();
   }
 }
 
-/* ------------------------------------------------------------ escenas */
-/** Una escena de un solo objeto del catálogo (los enlaces #orion, #m42...). */
-const escenaDePreset = (k) => ({ groups: [{ id: 'g1', preset: k, radius: RADIO_OBJETO }] });
+function mueveEje(clave, eje, valor) {
+  const s = spec();
+  if (!s || !Number.isFinite(valor)) return;
+  const v = s[clave].slice();
+  v[eje] = valor;
+  cambia({ [clave]: v });
+}
 
-function montaEscena(datos, { vistaNueva = true } = {}) {
+function escalaGrupo(t) {
+  const s = spec();
+  if (!s) return;
+  const m = Math.max(...s.scale.map(Math.abs)) || 1;
+  cambia({ scale: s.scale.map((v) => v / m * t) });
+}
+
+function mueveExplosion(v) {
+  const s = spec();
+  const e = motor();
+  if (!s || !e) return;
+  /* a still explosion keeps the value (in the link); a running one is only scrubbed */
+  if (s.evolutionRate > 0) {
+    e.setEvolution(v);
+    finExplosion.delete(sel);
+    pide();
+  } else {
+    cambia({ evolution: v });
+  }
+}
+
+function reiniciaExplosion() {
+  const e = motor();
+  if (e) e.restartEvolution(0);
+  finExplosion.delete(sel);
+  pide();
+}
+
+/* ------------------------------------------------------------ render settings → engine */
+function aplicaRender(patch, { sync = true, hash = true } = {}) {
+  const cambiado = {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (!(k in RENDER_SPEC)) continue;
+    if (render[k] !== v) cambiado[k] = v;
+    render[k] = v;
+  }
+  const s = post.settings;
+  s.exposure = render.exposure;
+  s.aces = render.aces;
+  s.bloom = render.bloom;
+  s.bloomRadius = render.bloomradius;
+  s.bloomThreshold = render.bloomthreshold;
+  s.grain = render.grain;
+  s.vignette = render.vignette;
+  const sys = {};
+  if ('quality' in cambiado) sys.quality = tierDe(render.quality);
+  if ('adaptive' in cambiado) sys.adaptive = render.adaptive;
+  if ('cull' in cambiado) sys.minPointPx = render.cull ? 0.5 : 0;
+  if ('fps' in cambiado) sys.targetFrameMs = 1000 / (fpsTope() || 60);
+  if ('dustgrains' in cambiado) Object.assign(sys, opcionesGranos());
+  if ('budget' in cambiado) sys.maxTotalSamples = render.budget;
+  if ('halfres' in cambiado) {
+    renderer.setPixelRatio(DPR_BASE * escalaRes());
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    post.resize();
+    sys.resolutionScale = escalaRes();
+  }
+  if (Object.keys(sys).length) {
+    sistema.setOptions(sys);
+    compruebaEn = 1;
+  }
+  /* always: a new camera sees only layer 0, and "All" has to mean all from the start */
+  if (render.layers === 'all') camera.layers.enableAll();
+  else camera.layers.set(Number(render.layers));
+  if (sync) syncRender();
+  if (Object.keys(sys).length && sync) syncGrupo();
+  if (hash) guardaHash();
+  pide();
+}
+
+function restableceRender() {
+  const { spin, layers, ...resto } = RENDER_DEFAULTS;
+  aplicaRender(resto);
+}
+
+/* ------------------------------------------------------------ scenes */
+let montadas = 0;
+function montaEscena(datos, { seleccion = 0 } = {}) {
+  montadas++;
   falloFijo = false;
   const t0 = performance.now();
   const r = sistema.load(datos);
   msGenerada = performance.now() - t0;
-  if (vistaNueva) ponVista(r.view);
+  ponVista(r.view);
+  /* a file can bring its own budget: kept if the panel offers it */
+  const m = sistema.getOptions().maxTotalSamples;
+  if (BUDGET_OPTIONS.includes(String(m))) render.budget = m;
+  else sistema.setOptions({ maxTotalSamples: render.budget });
   finExplosion.clear();
   compruebaEn = 1;
-  elige(r.ids[0] || null);
+  elige(r.ids[seleccion] || r.ids[0] || null);
+  syncRender();
   return r;
 }
 
 function cargaEjemplo(k) {
   montaEscena(DUST_EXAMPLE_SCENES[k]);
-  selEscena.value = k;
-  marcaNav(k);
-  ponHash('#' + k);
+  escenaBase = k;
+  ui.get('example').set(k);
+  guardaHash({ now: true });
 }
 
 function cargaPreset(k) {
-  montaEscena(escenaDePreset(k));
-  selEscena.value = '';
-  marcaNav(k);
-  ponHash('#' + k);
+  montaEscena(presetScene(k));
+  escenaBase = null;
+  ui.get('example').set('');
+  guardaHash({ now: true });
 }
 
-function marcaNav(k) {
-  for (const a of nav.children) a.classList.toggle('activo', a.dataset.k === k);
+function cambiaPreset(k) {
+  if (!sel) {
+    if (k) anadir(k);
+    return;
+  }
+  cambia({ preset: k || null }, true);
 }
 
-/* ------------------------------------------------------------ enlace en el hash
- * Tras cada cambio, la escena entera (grupos y encuadre) va comprimida en
- * #s=...; si es un ejemplo o un objeto del catálogo sin tocar, queda el
- * nombre corto (#collision, #orion). */
+/** ← →: the previous or next preset on the selected group (a new group if there is none). */
+function pasoPreset(d) {
+  const s = spec();
+  const n = ORDEN_PRESETS.length;
+  const i = s && s.preset ? ORDEN_PRESETS.indexOf(s.preset) : -1;
+  const k = ORDEN_PRESETS[i < 0 ? (d > 0 ? 0 : n - 1) : (i + d + n) % n];
+  if (!s) anadir(k);
+  else cambia({ preset: k }, true);
+}
+
+/** R: a random preset and seed for the selected group, with its color and sliders rolled within looks that work. */
+function lookAleatorio() {
+  if (!sel) anadir();
+  const s = spec();
+  if (!s) return;
+  const presets = ORDEN_PRESETS.filter((k) => k !== s.preset);
+  const k = presets[Math.floor(random() * presets.length)];
+  const base = nebulaDustOptions(k);
+  const patch = { preset: k, seed: randomDustSeed() };
+  if (random() < 0.4) {
+    const paletas = DUST_PALETTES.filter((p) => p !== 'dark');
+    patch.palette = paletas[Math.floor(random() * paletas.length)];
+  }
+  if (random() < 0.3) {
+    const h = random();
+    patch.tint = '#' + [0, 1, 2].map((c) => Math.round(255 * (0.78 + 0.22 * Math.cos(6.2832 * (h + c / 3))))
+      .toString(16).padStart(2, '0')).join('');
+  } else {
+    patch.tint = '#ffffff';
+  }
+  patch.opacity = clamp((base.opacity ?? 0.86) * (0.75 + random() * 0.35), 0.25, 1);
+  patch.size = clamp((base.particleScale ?? 1) * (0.8 + random() * 0.5), 0.2, 3);
+  if (random() < 0.5) patch.motion = Math.round(random() * 35) / 100;
+  cambia(patch, true);
+}
+
+/* ------------------------------------------------------------ groups */
+function anadir(preset) {
+  const k = preset || (spec() && spec().preset) || 'interstellarDust';
+  const id = sistema.addGroup({
+    preset: k, seed: randomDustSeed(), radius: DEMO_RADIUS, position: vista.target.toArray(), order: 1 + sistema.size
+  });
+  elige(id);
+  guardaHash();
+  return id;
+}
+
+function duplicar() {
+  if (!sel) return;
+  const s = spec();
+  const id = sistema.duplicateGroup(sel, {
+    seed: randomDustSeed(),
+    position: [s.position[0] + 0.3, s.position[1], s.position[2]]
+  });
+  elige(id);
+  guardaHash();
+}
+
+function ocultar() {
+  const s = spec();
+  if (s) cambia({ visible: !s.visible });
+}
+
+function borrar() {
+  if (!sel) return;
+  sistema.removeGroup(sel);
+  finExplosion.delete(sel);
+  sel = null;
+  elige(null);
+  guardaHash();
+}
+
+function vaciar() {
+  sistema.clear();
+  finExplosion.clear();
+  sel = null;
+  escenaBase = null;
+  elige(null);
+  ui.get('example').set('');
+  guardaHash();
+}
+
+function restableceGrupo() {
+  if (!sel) return;
+  sistema.resetGroup(sel);
+  sistema.updateGroup(sel, { count: null });
+  syncGrupo();
+  guardaHash();
+  pide();
+}
+
+function restableceVista() {
+  ponVista(exampleView(escenaBase));
+  guardaHash();
+  pide();
+}
+
+lista.addEventListener('click', (e) => {
+  const b = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
+  const li = b && b.closest('[data-group]');
+  if (!li) return;
+  const id = li.dataset.group;
+  if (b.dataset.action === 'pick') elige(id);
+  else if (b.dataset.action === 'eye') {
+    const g = sistema.getGroup(id);
+    if (g) sistema.updateGroup(id, { visible: !g.spec.visible });
+    if (id === sel) colocaGizmo();
+    syncGrupo();
+    guardaHash();
+  }
+  pide();
+});
+
+/* ------------------------------------------------------------ the hash
+ * After each change the whole scene goes into the hash as readable
+ * parameters (hash.js); an example or a preset that was not touched is just
+ * #scene=collision or #preset=orion. */
 let hashPendiente = 0;
-let hashListo = Promise.resolve();
+const esperandoHash = [];
 function ponHash(h) {
-  if (location.hash !== h) history.replaceState(null, '', h || '#');
+  if (location.hash !== h) history.replaceState(null, '', h);
 }
-function hashCorto() {
-  const actual = JSON.stringify(sistema.serialize().groups);
-  const igual = (datos) => {
-    try {
-      const specs = datos.groups.map((g, i) => normalizeDustGroupSpec({ ...g, id: g.id || 'g' + (i + 1) }, null, 'dust-g' + (i + 1)));
-      return JSON.stringify(specs) === actual;
-    } catch {
-      return false;
-    }
-  };
-  for (const k of Object.keys(DUST_EXAMPLE_SCENES)) if (igual(DUST_EXAMPLE_SCENES[k])) return '#' + k;
-  for (const k of NOMBRES) if (igual(escenaDePreset(k))) return '#' + k;
-  return null;
+function estadoHash() {
+  const idx = sistema.listGroups().findIndex((g) => g.id === sel);
+  return { groups: sistema.serialize().groups, view: vistaGuardada, render: { ...render }, selected: Math.max(0, idx), scene: escenaBase };
 }
-async function escribeHash() {
-  const c = hashCorto();
-  if (c) { ponHash(c); return c; }
-  const texto = await encodeDustScene(sistema.serialize({ view: vistaJson() }));
-  const h = '#s=' + texto;
+function escribeHash() {
+  hashPendiente = 0;
+  const h = '#' + encodeHash(estadoHash());
   ponHash(h);
+  for (const r of esperandoHash.splice(0)) r(h);
   return h;
 }
-function guardaHash() {
+function guardaHash({ now = false } = {}) {
   if (hashPendiente) clearTimeout(hashPendiente);
-  hashPendiente = setTimeout(() => {
-    hashPendiente = 0;
-    hashListo = escribeHash().catch((e) => console.warn('enlace', e));
-  }, 250);
+  hashPendiente = 0;
+  if (now) return escribeHash();
+  hashPendiente = setTimeout(escribeHash, 250);
+  return null;
 }
 
-/** Lee el hash: #s=escena, #ejemplo, #objeto (o su alias). Si no, el primer ejemplo. */
+/** Reads the hash: readable parameters, #s=scene (v0.4.0), #example, #preset (or its alias). */
 async function desdeHash() {
-  const h = decodeURIComponent(location.hash.slice(1));
-  if (h.startsWith('s=')) {
+  const p = parseHash(location.hash);
+  if (p.kind === 'empty') { cargaEjemplo(DEFAULT_SCENE); return; }
+  if (p.kind === 'compressed') {
     try {
-      const datos = await decodeDustScene(h.slice(2));
-      montaEscena(datos);
-      selEscena.value = '';
-      marcaNav('');
-      return;
+      montaEscena(await decodeDustScene(p.text));
+      escenaBase = null;
+      ui.get('example').set('');
+      guardaHash({ now: true });
     } catch (e) {
-      cargaEjemplo('twinNebula');
-      avisaFallo('El enlace no trae una escena válida (' + (e && e.message ? e.message : e) + '): se abre el ejemplo.');
+      cargaEjemplo(DEFAULT_SCENE);
+      avisaFallo('The link does not carry a valid scene (' + (e && e.message ? e.message : e) + '): the example opens instead.');
       falloFijo = true;
-      return;
     }
+    return;
   }
-  const ej = DUST_EXAMPLE_SCENES[h] ? h : ALIAS_ESCENA[h.toLowerCase()];
-  if (ej) { cargaEjemplo(ej); return; }
-  const k = resolveNebulaDustPresetName(h);
-  if (k) { cargaPreset(k); return; }
-  cargaEjemplo('twinNebula');
+  if (p.kind === 'name') {
+    if (p.scene) cargaEjemplo(p.scene);
+    else if (p.preset) cargaPreset(p.preset);
+    else {
+      cargaEjemplo(DEFAULT_SCENE);
+      avisa('Unknown link "' + String(p.unknown).slice(0, 40) + '": the example opens instead.');
+    }
+    return;
+  }
+  if (p.onlyRender) {
+    /* only render settings: they apply to the scene that is up (the example on a first visit) */
+    if (!montadas) {
+      montaEscena(DUST_EXAMPLE_SCENES[DEFAULT_SCENE]);
+      escenaBase = DEFAULT_SCENE;
+      ui.get('example').set(DEFAULT_SCENE);
+    }
+    aplicaRender(p.render, { hash: false });
+  } else {
+    /* first away with the old clouds, so the settings below do not rebuild them */
+    sistema.clear();
+    aplicaRender({ ...RENDER_DEFAULTS, ...p.render }, { hash: false });
+    montaEscena(p.scene, { seleccion: p.selected });
+    escenaBase = p.example;
+    ui.get('example').set(p.example || '');
+  }
+  guardaHash({ now: true });
+  if (p.warnings.length) avisa('Ignored in the link: ' + p.warnings.join(', '));
 }
+window.addEventListener('hashchange', () => { desdeHash().then(pide); });
 
-/* ------------------------------------------------------------ guardar y cargar */
+/* ------------------------------------------------------------ save and load */
 let ultimoJson = '';
 function jsonEscena() {
   return JSON.stringify(sistema.serialize({ view: vistaJson() }), null, 2);
@@ -623,38 +993,43 @@ function descarga(texto, nombre) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
   return true;
 }
+function guardar() {
+  descarga(jsonEscena(), 'nebula-dust-scene.json');
+  avisa('Scene saved as nebula-dust-scene.json');
+}
 function importaJson(texto) {
   try {
     montaEscena(JSON.parse(texto));
-    selEscena.value = '';
-    marcaNav('');
-    guardaHash();
-    avisa('Escena cargada: ' + sistema.size + ' grupos.');
+    escenaBase = null;
+    ui.get('example').set('');
+    guardaHash({ now: true });
+    avisa('Scene loaded: ' + sistema.size + (sistema.size === 1 ? ' group.' : ' groups.'));
     return true;
   } catch (e) {
-    avisaFallo('Ese fichero no es una escena de Nebula Dust Engine: ' + (e && e.message ? e.message : e));
+    avisaFallo('That file is not a Nebula Dust Engine scene: ' + (e && e.message ? e.message : e));
     return false;
   }
 }
-let avisoHasta = 0;
-function avisa(texto) {
-  aviso.hidden = false;
-  aviso.textContent = texto;
-  const hasta = ++avisoHasta;
-  setTimeout(() => { if (hasta === avisoHasta) aviso.hidden = true; }, 3000);
+$('file').addEventListener('change', () => {
+  const input = $('file');
+  const f = input.files && input.files[0];
+  if (!f) return;
+  Promise.resolve(typeof f.text === 'function' ? f.text() : '').then((t) => { importaJson(t); pide(); });
+  input.value = '';
+});
+function copiaEnlace() {
+  guardaHash({ now: true });
+  const url = String(location.href);
+  const portapapeles = typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText
+    ? navigator.clipboard.writeText(url) : Promise.reject(new Error('no clipboard'));
+  return portapapeles.then(() => avisa('Link copied: the whole scene is in it.'), () => avisa('The link is in the address bar.'));
 }
 
-/* ------------------------------------------------------------ modos */
+/* ------------------------------------------------------------ modes */
 function ponModo(m) {
+  if (!MODES.some((x) => x[0] === m)) return;
   modo = m;
-  for (const [id, v] of [['mGirar', 'girar'], ['mSembrar', 'sembrar'], ['mMover', 'mover'], ['mTocar', 'tocar']]) {
-    $(id).classList.toggle('activo', v === m);
-    $(id).setAttribute('aria-pressed', String(v === m));
-  }
-  $('opSembrar').hidden = m !== 'sembrar';
-  $('opMover').hidden = m !== 'mover';
-  $('opTocar').hidden = m !== 'tocar';
-  $('ayudaModo').textContent = AYUDA[m];
+  syncModo();
   colocaGizmo();
   pide();
 }
@@ -669,7 +1044,7 @@ function rayoDe(x, y) {
   raycaster.setFromCamera(ndc, camera);
   return raycaster;
 }
-const capaVista = () => ($('capaVista').value === 'todas' ? undefined : Number($('capaVista').value));
+const capaVista = () => (render.layers === 'all' ? undefined : Number(render.layers));
 
 function eligeEn(x, y) {
   const hit = sistema.pick(rayoDe(x, y), { layer: capaVista() });
@@ -680,11 +1055,11 @@ function eligeEn(x, y) {
 function siembraEn(x, y) {
   const punto = projectToViewPlane(rayoDe(x, y), camera, vista.target);
   if (!punto) return null;
-  const v = siembraSelect.value;
-  const t = Number($('tamSiembra').value) || 0.45;
-  const base = v.startsWith('forma:')
-    ? { morphology: v.slice(6), name: FORMAS[v.slice(6)] || v.slice(6) }
-    : { preset: v, name: DEMOS[v] ? DEMOS[v][0] : v };
+  const v = ui.get('sow').get();
+  const t = ui.get('sowsize').get() || 0.45;
+  const base = v.startsWith('shape:')
+    ? { morphology: v.slice(6), name: SHAPES[v.slice(6)] || v.slice(6) }
+    : { preset: v, name: nombrePreset(v) };
   const id = sistema.sow(punto, {
     ...base,
     seed: randomDustSeed(),
@@ -703,232 +1078,109 @@ function tocaEn(x, y) {
   const centro = s ? new THREE.Vector3().fromArray(s.position) : vista.target;
   const punto = projectToViewPlane(rayoDe(x, y), camera, centro);
   if (!punto) return 0;
-  const n = sistema.touch(punto, { radius: Number($('radioToque').value), strength: Number($('fuerzaToque').value) });
+  const n = sistema.touch(punto, { radius: ui.get('touchradius').get(), strength: ui.get('touchstrength').get() });
   pide();
   return n;
 }
 
-/* ------------------------------------------------------------ eventos, por delegación */
-const AL_CAMBIAR = {
-  escena: () => { if (selEscena.value) cargaEjemplo(selEscena.value); },
-  fichero: () => {
-    const f = $('fichero').files && $('fichero').files[0];
-    if (!f) return;
-    Promise.resolve(typeof f.text === 'function' ? f.text() : '').then(importaJson);
-    $('fichero').value = '';
-  },
-  nombre: () => { cambia({ name: $('nombre').value.trim() || null }); },
-  preset: () => { cambia({ preset: presetSelect.value }, true); },
-  semillaTxt: () => { if ($('semillaTxt').value.trim()) cambia({ seed: $('semillaTxt').value.trim() }, true); },
-  motas: () => { cambia({ count: selMotas.value === 'auto' ? null : Number(selMotas.value) }, true); },
-  forma: () => {
-    const s = spec();
-    const m = selForma.value || (s && s.preset ? nebulaDustOptions(s.preset).morphology : 'diffuse');
-    cambia({ morphology: m }, true);
-  },
-  paleta: () => {
-    if (selPaleta.value === 'propia') cambia({ colors: pickers.map((p) => p.value) });
-    else cambia({ palette: selPaleta.value || null });
-  },
-  perfil: () => { cambia({ volumeProfile: selPerfil.value || null }, true); },
-  mezcla: () => {
-    const s = spec();
-    const b = selMezcla.value || (s && s.preset && nebulaDustOptions(s.preset).blending === 'additive' ? 'additive' : 'normal');
-    cambia({ blending: b });
-  },
-  capa: () => { cambia({ layer: Number($('capa').value) }); },
-  granos: () => { sistema.setOptions(opcionesGranos()); compruebaEn = 1; panelDesdeGrupo(); },
-  adaptativo: () => { sistema.setOptions({ adaptive: selAdapt.value === 'si' }); panelDesdeGrupo(); },
-  sorteo: () => { sistema.setOptions({ minPointPx: minPx() }); },
-  fps: () => { sistema.setOptions({ targetFrameMs: 1000 / (fpsTope() || 60) }); panelDesdeGrupo(); },
-  resolucion: () => {
-    renderer.setPixelRatio(DPR_BASE * escalaRes());
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    ajustaBufer();
-    sistema.setOptions({ resolutionScale: escalaRes() });
-  },
-  capaVista: () => {
-    if ($('capaVista').value === 'todas') camera.layers.enableAll();
-    else camera.layers.set(Number($('capaVista').value));
-  },
-  giro: () => {},
-  siembra: () => {},
-  gizmo: () => { colocaGizmo(); }
-};
-const AL_MOVER = {
-  escala: () => cambia({ size: Number(escala.value) }),
-  flujo: () => cambia({ flowSpeed: Number(flujo.value) }),
-  movimiento: () => cambia({ motion: Number(movimiento.value) }),
-  opacidad: () => cambia({ opacity: Number(opacidad.value) }),
-  maxpx: () => cambia({ maxPointSize: Number(maxpx.value) }),
-  tinte: () => cambia({ tint: $('tinte').value }),
-  tamGrupo: () => {
-    const s = spec();
-    if (!s) return;
-    const m = Math.max(...s.scale.map(Math.abs)) || 1;
-    const t = Number($('tamGrupo').value);
-    cambia({ scale: s.scale.map((v) => v / m * t) });
-  },
-  posX: () => mueveEje('position', 0, Number($('posX').value)),
-  posY: () => mueveEje('position', 1, Number($('posY').value)),
-  posZ: () => mueveEje('position', 2, Number($('posZ').value)),
-  rotX: () => mueveEje('rotation', 0, Number($('rotX').value) / GRADOS),
-  rotY: () => mueveEje('rotation', 1, Number($('rotY').value) / GRADOS),
-  rotZ: () => mueveEje('rotation', 2, Number($('rotZ').value) / GRADOS),
-  orden: () => cambia({ order: Number($('orden').value) }),
-  exposicion: () => { renderer.toneMappingExposure = Number(exposicion.value); },
-  evolucion: () => {
-    const e = motor();
-    if (e) e.setEvolution(Number(evolucion.value));
-    finExplosion.delete(sel);
-  },
-  tamSiembra: () => {},
-  radioToque: () => {},
-  fuerzaToque: () => {}
-};
-function mueveEje(clave, eje, valor) {
-  const s = spec();
-  if (!s || !Number.isFinite(valor)) return;
-  const v = s[clave].slice();
-  v[eje] = valor;
-  cambia({ [clave]: v });
-}
-const AL_PULSAR = {
-  anadir: () => {
-    const k = presetSelect.value && NOMBRES.includes(presetSelect.value) ? presetSelect.value : 'interstellarDust';
-    const id = sistema.addGroup({ preset: k, seed: randomDustSeed(), radius: RADIO_OBJETO, position: vista.target.toArray(), order: 1 + sistema.size });
-    elige(id);
-    guardaHash();
-  },
-  duplicar: () => {
-    if (!sel) return;
-    const s = spec();
-    const id = sistema.duplicateGroup(sel, {
-      name: nombreDe(s) + ' (copia)',
-      seed: randomDustSeed(),
-      position: [s.position[0] + 0.3, s.position[1], s.position[2]]
-    });
-    elige(id);
-    guardaHash();
-  },
-  borrar: () => {
-    if (!sel) return;
-    sistema.removeGroup(sel);
-    finExplosion.delete(sel);
-    sel = null;
-    elige(null);
-    guardaHash();
-  },
-  ocultar: () => {
-    const s = spec();
-    if (s) cambia({ visible: !s.visible });
-  },
-  vaciar: () => {
-    sistema.clear();
-    sel = null;
-    elige(null);
-    selEscena.value = '';
-    guardaHash();
-  },
-  guardar: () => {
-    descarga(jsonEscena(), 'nebula-dust-scene.json');
-    avisa('Escena guardada en nebula-dust-scene.json');
-  },
-  cargar: () => { const f = $('fichero'); if (typeof f.click === 'function') f.click(); },
-  enlace: () => {
-    if (hashPendiente) { clearTimeout(hashPendiente); hashPendiente = 0; }
-    hashListo = encodeDustScene(sistema.serialize({ view: vistaJson() })).then((t) => {
-      ponHash('#s=' + t);
-      const url = String(location.href || '#s=' + t);
-      const portapapeles = typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText
-        ? navigator.clipboard.writeText(url) : Promise.reject(new Error('sin portapapeles'));
-      return portapapeles.then(() => avisa('Enlace copiado: la escena va dentro.'), () => avisa('Enlace listo en la barra de direcciones.'));
-    });
-  },
-  semilla: () => { cambia({ seed: randomDustSeed() }, true); },
-  restablecer: () => {
-    if (sel) {
-      sistema.resetGroup(sel);
-      sistema.updateGroup(sel, { count: null });
-    }
-    selGranos.value = '1e18';
-    selAdapt.value = 'si';
-    selSorteo.value = 'no';
-    sistema.setOptions({ ...opcionesGranos(), adaptive: true, minPointPx: 0 });
-    renderer.toneMappingExposure = EXPOSICION;
-    exposicion.value = String(EXPOSICION);
-    panelDesdeGrupo();
-    guardaHash();
-  },
-  reiniciar: () => { const e = motor(); if (e) e.restartEvolution(0); finExplosion.delete(sel); },
-  plegar: () => {
-    const p = $('info').classList.toggle('plegado');
-    $('plegar').textContent = p ? 'Mostrar' : 'Ocultar';
-    $('plegar').setAttribute('aria-expanded', String(!p));
-  },
-  mGirar: () => ponModo('girar'),
-  mSembrar: () => ponModo('sembrar'),
-  mMover: () => ponModo('mover'),
-  mTocar: () => ponModo('tocar')
-};
-/* Los botones de cada fila de la lista de grupos no tienen id: van por data-accion. */
-const EN_LISTA = {
-  elegir: (id) => elige(id),
-  ver: (id) => {
-    const s = sistema.getGroup(id);
-    if (s) sistema.updateGroup(id, { visible: !s.spec.visible });
-    if (id === sel) colocaGizmo();
-    pintaLista();
-    guardaHash();
-  }
-};
-document.addEventListener('change', (e) => {
-  const t = e.target;
-  if (!t || !t.id) {
-    /* los selectores de color no tienen id: van por su contenedor */
-    if (t && t.closest && t.closest('#colores')) cambia({ colors: pickers.map((p) => p.value) });
-    pide();
-    return;
-  }
-  if (AL_CAMBIAR[t.id]) { AL_CAMBIAR[t.id](); pide(); }
-});
-document.addEventListener('input', (e) => {
-  const t = e.target;
-  if (t && AL_MOVER[t.id]) { AL_MOVER[t.id](); pide(); }
-});
-document.addEventListener('click', (e) => {
-  const fila = e.target && e.target.closest ? e.target.closest('[data-accion]') : null;
-  if (fila) {
-    const li = fila.closest('[data-grupo]');
-    if (li && EN_LISTA[fila.dataset.accion]) EN_LISTA[fila.dataset.accion](li.dataset.grupo);
-    pide();
-    return;
-  }
-  const b = e.target && e.target.closest ? e.target.closest('button[id]') : null;
-  if (b && AL_PULSAR[b.id]) { AL_PULSAR[b.id](); pide(); }
-});
-window.addEventListener('hashchange', () => { desdeHash().then(pide); });
+/* ------------------------------------------------------------ pause, fullscreen, hiding the interface */
+const btnPausa = $('pause');
+const btnAzar = $('randomize');
+const btnPantalla = $('fullscreen');
+const btnInterfaz = $('ui-toggle');
 
-/* ------------------------------------------------------------ ratón y dedos
- * Un dedo o el ratón hacen lo del modo (girar, sembrar, mover, tocar); un
- * toque corto sin arrastrar elige el grupo (o siembra, en «Sembrar»); dos
- * dedos pellizcan para acercar en cualquier modo; la rueda acerca. */
+function ponPausa(on) {
+  pausado = Boolean(on);
+  btnPausa.setAttribute('aria-pressed', String(pausado));
+  btnPausa.setAttribute('aria-label', pausado ? 'Play' : 'Pause');
+  btnPausa.title = pausado ? 'Play (Space)' : 'Pause (Space)';
+  pide();
+}
+
+/* The whole page, not the canvas: the panel and the buttons have to stay reachable. */
+function pantallaCompleta() {
+  const d = document;
+  if (d.fullscreenElement) {
+    if (typeof d.exitFullscreen === 'function') {
+      const p = d.exitFullscreen();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
+  } else if (d.documentElement && typeof d.documentElement.requestFullscreen === 'function') {
+    const p = d.documentElement.requestFullscreen();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  }
+}
+document.addEventListener('fullscreenchange', () => {
+  const on = Boolean(document.fullscreenElement);
+  btnPantalla.setAttribute('aria-pressed', String(on));
+  btnPantalla.setAttribute('aria-label', on ? 'Exit fullscreen' : 'Fullscreen');
+});
+
+function ocultaInterfaz(on) {
+  document.body.classList.toggle('ui-hidden', Boolean(on));
+  btnInterfaz.setAttribute('aria-pressed', String(Boolean(on)));
+  const texto = on ? 'Show the interface' : 'Hide the interface';
+  btnInterfaz.setAttribute('aria-label', texto);
+  btnInterfaz.title = texto + ' (Tab)';
+}
+
+btnPausa.addEventListener('click', () => ponPausa(!pausado));
+btnAzar.addEventListener('click', () => { btnAzar.classList.toggle('turned'); lookAleatorio(); });
+/* no Fullscreen API (an iPhone): no button, as in bumpy-metaballs */
+btnPantalla.hidden = !document.fullscreenEnabled;
+btnPantalla.addEventListener('click', () => pantallaCompleta());
+btnInterfaz.addEventListener('click', () => ocultaInterfaz(!document.body.classList.contains('ui-hidden')));
+$('buttons').hidden = false;
+
+/* ------------------------------------------------------------ keys (guspira's rules: not while typing, not with Ctrl) */
+bindKey('ArrowRight', () => pasoPreset(1));
+bindKey('ArrowLeft', () => pasoPreset(-1));
+bindKey('KeyR', () => lookAleatorio());
+bindKey('Space', () => ponPausa(!pausado));
+bindKey('KeyF', () => pantallaCompleta());
+bindKey('Tab', (e) => {
+  /* inside the panel and the buttons, Tab still moves the focus */
+  if (e.target && typeof e.target.closest === 'function' && e.target.closest('#panel, #buttons')) return false;
+  ocultaInterfaz(!document.body.classList.contains('ui-hidden'));
+  return true;
+});
+MODES.forEach(([m], i) => bindKey('Digit' + (i + 1), () => ponModo(m)));
+
+/* ------------------------------------------------------------ mouse and fingers
+ * One finger or the mouse does what the mode says (orbit, sow, move, touch);
+ * a short tap without dragging selects the group under it (or sows, in Sow);
+ * two fingers pinch to zoom in any mode; the wheel zooms. A double click, or
+ * a double tap, in Orbit goes fullscreen. */
 const punteros = new Map();
 let distPellizco = 0;
+let pellizco = false;
 let inicioToque = null;
+let ultimoPuntero = 'mouse';
+let ultimoToque = null;
 const acerca = (f) => {
   vista.distance = THREE.MathUtils.clamp(vista.distance * f, 1.2, 14);
   aplicaVista();
   pide();
 };
-renderer.domElement.addEventListener('pointerdown', (e) => {
+function dobleToque(e) {
+  const t = performance.now();
+  if (ultimoToque && t - ultimoToque.t < 350 && Math.hypot(e.clientX - ultimoToque.x, e.clientY - ultimoToque.y) < 40) {
+    ultimoToque = null;
+    pantallaCompleta();
+  } else {
+    ultimoToque = { t, x: e.clientX, y: e.clientY };
+  }
+}
+const lienzo = renderer.domElement;
+lienzo.addEventListener('pointerdown', (e) => {
+  ultimoPuntero = e.pointerType || 'mouse';
   punteros.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (typeof renderer.domElement.setPointerCapture === 'function') {
-    try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* nada */ }
+  if (typeof lienzo.setPointerCapture === 'function') {
+    try { lienzo.setPointerCapture(e.pointerId); } catch { /* nothing */ }
   }
   if (punteros.size === 1) {
     inicioToque = { x: e.clientX, y: e.clientY, t: performance.now(), movido: 0 };
-    if (modo === 'tocar') tocaEn(e.clientX, e.clientY);
+    if (modo === 'touch') tocaEn(e.clientX, e.clientY);
   } else {
     inicioToque = null;
   }
@@ -945,16 +1197,23 @@ const suelta = (e) => {
   if (e.type === 'pointerup' && era && inicioToque && punteros.size === 0 && !arrastrandoGizmo) {
     const corto = inicioToque.movido < 6 && performance.now() - inicioToque.t < 600;
     if (corto) {
-      if (modo === 'sembrar') siembraEn(e.clientX, e.clientY);
-      else if (modo === 'girar' || modo === 'mover') eligeEn(e.clientX, e.clientY);
+      if (modo === 'sow') siembraEn(e.clientX, e.clientY);
+      else if (modo === 'orbit' || modo === 'move') eligeEn(e.clientX, e.clientY);
+      if (modo === 'orbit' && e.pointerType === 'touch') dobleToque(e);
+    } else if (modo !== 'touch') {
+      fijaVista();
     }
   }
-  if (punteros.size === 0) inicioToque = null;
+  if (punteros.size === 0) {
+    if (pellizco) fijaVista();
+    pellizco = false;
+    inicioToque = null;
+  }
   pide();
 };
-renderer.domElement.addEventListener('pointerup', suelta);
-renderer.domElement.addEventListener('pointercancel', suelta);
-renderer.domElement.addEventListener('pointermove', (e) => {
+lienzo.addEventListener('pointerup', suelta);
+lienzo.addEventListener('pointercancel', suelta);
+lienzo.addEventListener('pointermove', (e) => {
   const prev = punteros.get(e.pointerId);
   if (!prev) return;
   const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
@@ -965,37 +1224,41 @@ renderer.domElement.addEventListener('pointermove', (e) => {
     const d = Math.hypot(a.x - b.x, a.y - b.y);
     if (distPellizco > 0 && d > 0) acerca(distPellizco / d);
     distPellizco = d;
+    pellizco = true;
     return;
   }
   if (punteros.size !== 1) return;
-  if (modo === 'tocar') { tocaEn(e.clientX, e.clientY); return; }
-  if (modo === 'mover' && arrastrandoGizmo) return;
+  if (modo === 'touch') { tocaEn(e.clientX, e.clientY); return; }
+  if (modo === 'move' && arrastrandoGizmo) return;
   vista.azimuth -= dx * 0.006;
   vista.elevation = THREE.MathUtils.clamp(vista.elevation + dy * 0.006, -1.45, 1.45);
   aplicaVista();
   pide();
 });
-renderer.domElement.addEventListener('wheel', (e) => {
+lienzo.addEventListener('wheel', (e) => {
   e.preventDefault();
   acerca(Math.exp(e.deltaY * 0.001));
+  fijaVista();
 }, { passive: false });
+lienzo.addEventListener('dblclick', () => {
+  if (ultimoPuntero !== 'touch' && modo === 'orbit') pantallaCompleta();
+});
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  ajustaBufer();
+  post.resize();
   pide();
 });
 
-/* ------------------------------------------------------------ bucle
- * Se dibuja solo si algo cambia (giro, turbulencia, flujo, explosión, un
- * toque, un control o la cámara), como mucho al tope de fps, y nada con la
- * pestaña oculta. Quieto, la GPU no hace nada. */
-
+/* ------------------------------------------------------------ loop
+ * A frame is drawn only when something changes (auto-rotation, turbulence,
+ * flow, explosion, a touch, a control or the camera), at most at the frame
+ * cap, and never with the tab hidden or while paused. Still, the GPU rests. */
 function anima() {
-  return selGiro.value === 'si' || punteros.size > 0 || finExplosion.size > 0
-    || sistema.isAnimated();
+  if (pausado) return punteros.size > 0;
+  return render.spin || punteros.size > 0 || finExplosion.size > 0 || sistema.isAnimated();
 }
 let detenido = false;
 function programa() {
@@ -1006,8 +1269,9 @@ function pide() {
   programa();
 }
 
-/** Las explosiones vuelven a empezar 2,5 s después de acabar. */
+/** Explosions start again 2.5 s after they end. */
 function cicloExplosiones(now) {
+  const explosion = ui.get('explosion');
   for (const g of sistema.listGroups()) {
     if (!g.visible) continue;
     const e = sistema.getGroup(g.id).engine;
@@ -1017,7 +1281,7 @@ function cicloExplosiones(now) {
       if (!finExplosion.has(g.id)) finExplosion.set(g.id, now);
       else if (now - finExplosion.get(g.id) > 2500) { e.restartEvolution(0); finExplosion.delete(g.id); }
     }
-    if (g.id === sel && !bloqueExplosion.hidden && document.activeElement !== evolucion) evolucion.value = String(st.evolution);
+    if (g.id === sel && !explosion.hidden && document.activeElement !== explosion.input) explosion.set(st.evolution);
   }
 }
 
@@ -1036,7 +1300,7 @@ function frame(now) {
     return;
   }
   const deltaSeconds = ultimoDibujo && ultimoRitmo ? Math.min(0.1, (now - ultimoDibujo) / 1000) : 0;
-  /* el ritmo sigue la rejilla del tope para no perder fps con pantallas de 144 Hz */
+  /* the pace follows the cap's grid, so a 144 Hz screen does not lose frames */
   const pasado = now - ultimoRitmo;
   ultimoRitmo = intervalo && ultimoRitmo && pasado < intervalo * 3
     ? ultimoRitmo + intervalo * Math.max(1, Math.floor(pasado / intervalo))
@@ -1045,17 +1309,16 @@ function frame(now) {
   sucio = false;
 
   const t0 = performance.now();
-  if (selGiro.value === 'si' && punteros.size === 0) {
+  if (render.spin && !pausado && punteros.size === 0) {
     vista.azimuth += deltaSeconds * 0.035;
     aplicaVista();
   }
-  sistema.update(camera, deltaSeconds);
-  cicloExplosiones(now);
+  sistema.update(camera, pausado ? 0 : deltaSeconds);
+  if (!pausado) cicloExplosiones(now);
   const midiendo = sistema.beginGpuFrame();
-  renderer.setRenderTarget(bufer);
+  post.begin();
   renderer.render(scene, camera);
-  renderer.setRenderTarget(null);
-  renderer.render(escenaSalida, camSalida);
+  post.finish();
   if (midiendo) sistema.endGpuFrame();
   if (gizmo.object) {
     const auto = renderer.autoClear;
@@ -1086,16 +1349,22 @@ function pintaContador(now, quieto) {
   const sonda = sistema.probeFrame(camera, 2048);
   contador.enviadas = sonda.sentSamples;
   contador.dibujadas = sonda.drawnSamples;
-  hud.textContent = (quieto ? 'Quieto: nada cambia, la GPU descansa' : Math.round(contador.fps) + ' fps')
-    + (fpsTope() ? ' (tope ' + fpsTope() + ')' : ' (sin tope)')
-    + ' · ' + (contador.gpu != null ? contador.gpu.toFixed(1) + ' ms de GPU' : contador.cpu.toFixed(1) + ' ms de CPU')
-    + ' por fotograma · ' + contador.dibujadas.toLocaleString('es-ES') + ' motas dibujadas'
-    + (contador.enviadas < st.allocatedSamples || contador.dibujadas < contador.enviadas
-      ? ' de ' + st.allocatedSamples.toLocaleString('es-ES') : '')
-    + ' · ' + st.groups + (st.groups === 1 ? ' grupo' : ' grupos');
-  status.textContent = 'Enviadas a la GPU: ' + st.visibleSamples.toLocaleString('es-ES')
-    + (st.allocatedSamples ? ' (' + Math.round(st.visibleSamples / st.allocatedSamples * 100) + ' %, la luz se conserva)' : '')
-    + (escalaRes() < 1 ? ' · a media resolución' : '');
+  const tope = fpsTope();
+  stat('fpsnow').set(quieto ? (pausado ? 'paused' : 'idle') : Math.round(contador.fps) + ' fps', tope ? 'cap ' + tope : 'no cap',
+    !quieto && tope > 0 && contador.fps < tope * 0.8);
+  stat('cpu').set(contador.cpu.toFixed(2) + ' ms');
+  stat('gpu').set(contador.gpu != null ? contador.gpu.toFixed(2) + ' ms' : 'n/a', '', contador.gpu != null && contador.gpu > 16.7);
+  stat('drawn').set(miles(contador.dibujadas), 'of ' + miles(st.allocatedSamples));
+  stat('sent').set(miles(st.visibleSamples),
+    (st.allocatedSamples ? Math.round(st.visibleSamples / st.allocatedSamples * 100) + ' %' : '') + (escalaRes() < 1 ? ', half res' : ''));
+  stat('allocated').set(miles(st.allocatedSamples), 'budget ' + corto(st.maxTotalSamples) + (st.requestedSamples > st.maxTotalSamples ? ', shared' : ''));
+  stat('groups').set(String(st.groups));
+  const e = motor();
+  const md = e ? e.metadata : null;
+  stat('grains').set(md ? grande(md.physicalGrainCount) : '—');
+  stat('pergrain').set(md ? grande(md.grainsPerSample) : '—');
+  stat('tier').set(md ? String(md.gpuProfile.tier) + ' · ' + md.sampleCount.toLocaleString('en-US') + ' samples' : '—');
+  stat('generated').set(msGenerada ? Math.round(msGenerada) + ' ms' : '—');
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -1108,12 +1377,14 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-ponModo('girar');
+syncModo();
+syncRender();
+aplicaRender({}, { hash: false });
 const listo = desdeHash().then(() => pide());
 programa();
 
 window.nebulaDustDemo = {
-  /** El motor del grupo elegido. */
+  /** The engine of the selected group. */
   get engine() {
     return motor();
   },
@@ -1125,6 +1396,9 @@ window.nebulaDustDemo = {
   },
   get mode() {
     return modo;
+  },
+  get paused() {
+    return pausado;
   },
   get counter() {
     return { ...contador };
@@ -1141,35 +1415,58 @@ window.nebulaDustDemo = {
   get lastExport() {
     return ultimoJson;
   },
-  ready: listo,
-  /** Promesa del último enlace escrito en el hash. */
-  get hashWritten() {
-    return hashListo;
+  /** The render settings (a copy): exposure, aces, bloom… as in the hash. */
+  get render() {
+    return { ...render };
   },
+  get panel() {
+    return gui;
+  },
+  get post() {
+    return post;
+  },
+  ready: listo,
+  /** Resolves with the hash once the pending write (if any) is done. */
+  get hashWritten() {
+    return hashPendiente ? new Promise((r) => esperandoHash.push(r)) : Promise.resolve(location.hash);
+  },
+  flushHash: () => guardaHash({ now: true }),
+  hashState: estadoHash,
   maxSamples: MAX_GPU_SAMPLE_COUNT,
   checkCanvas: compruebaLienzo,
   select: elige,
   setMode: ponModo,
+  setPaused: ponPausa,
+  setRender: (patch) => aplicaRender(patch),
+  stepPreset: pasoPreset,
+  randomize: lookAleatorio,
+  toggleFullscreen: pantallaCompleta,
+  setInterfaceHidden: ocultaInterfaz,
   loadExample: cargaEjemplo,
   exportJSON: jsonEscena,
   importJSON: importaJson,
+  copyLink: copiaEnlace,
   sowAt: siembraEn,
   touchAt: tocaEn,
   pickAt: eligeEn,
-  /** Para la demo y libera la GPU (para incrustarla y quitarla). */
+  /** Stops the demo and frees the GPU (to embed it and take it away). */
   stop() {
     detenido = true;
     if (pedido) cancelAnimationFrame(pedido);
     pedido = 0;
     if (hashPendiente) clearTimeout(hashPendiente);
     hashPendiente = 0;
+    unbindAllKeys();
     gizmo.detach();
     if (typeof gizmo.dispose === 'function') gizmo.dispose();
     sistema.dispose();
+    post.dispose();
   },
   selectPreset(name) {
     const k = resolveNebulaDustPresetName(name);
-    if (!k) throw new Error('Preset desconocido: ' + name);
+    if (!k) throw new Error('Unknown preset: ' + name);
     cargaPreset(k);
-  }
+  },
+  /** A compressed #s=… link of the scene (the v0.4.0 format; still read). */
+  compressedLink: () => encodeDustScene(sistema.serialize({ view: vistaJson() })).then((t) => '#s=' + t)
 };
