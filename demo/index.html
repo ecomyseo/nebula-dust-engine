@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Nebula Dust Engine · editor</title>
+  <meta name="description" content="Editor de polvo nebular para three.js: grupos con su semilla, forma y colores, que se siembran, se mueven, se tocan y se guardan en JSON o en un enlace.">
+  <style>
+    :root {
+      --fondo: #03030a;
+      --panel: rgba(8, 6, 18, .84);
+      --borde: #5b4690;
+      --texto: #eeeafa;
+      --suave: #b9b0d6;
+      --acento: #9d7cff;
+      --control: #171126;
+    }
+    * { box-sizing: border-box; }
+    html, body, canvas { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: var(--fondo); color: var(--texto); font: 14px/1.45 system-ui, sans-serif; }
+    canvas { display: block; touch-action: none; }
+    #info {
+      position: fixed; z-index: 2; top: 16px; left: 16px;
+      width: min(380px, calc(100vw - 32px));
+      max-height: calc(100vh - 32px); overflow-y: auto; overscroll-behavior: contain;
+      padding: 12px 14px; border: 1px solid var(--borde); border-radius: 10px;
+      background: var(--panel); backdrop-filter: blur(8px);
+    }
+    #info.plegado .cuerpo { display: none; }
+    .cabecera { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    h1 { font-size: 15px; margin: 0; }
+    #plegar { background: none; border: 1px solid var(--borde); color: var(--suave); border-radius: 6px; padding: 2px 8px; cursor: pointer; font: inherit; }
+    p { margin: 6px 0; color: var(--suave); }
+    #que { color: var(--texto); }
+    details { border-top: 1px solid #2c2248; margin-top: 8px; padding-top: 4px; }
+    summary { cursor: pointer; color: var(--texto); font-weight: 600; padding: 3px 0; }
+    label { display: grid; grid-template-columns: 118px 1fr; gap: 8px; align-items: center; margin: 7px 0; }
+    .tres { display: grid; grid-template-columns: 118px repeat(3, 1fr); gap: 6px; align-items: center; margin: 7px 0; }
+    .tres span { color: var(--texto); }
+    select, button.accion, input[type=text] {
+      min-width: 0; padding: 6px 8px; color: #fff;
+      border: 1px solid var(--borde); border-radius: 6px; background: var(--control); font: inherit;
+    }
+    .botones { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    button.accion { cursor: pointer; flex: 1; min-height: 34px; }
+    button.accion:hover, #plegar:hover { border-color: var(--acento); }
+    input[type=range] { width: 100%; accent-color: var(--acento); }
+    input[type=color] { width: 44px; height: 30px; padding: 0; border: 1px solid var(--borde); border-radius: 5px; background: none; cursor: pointer; }
+    #colores { display: flex; gap: 6px; margin: 6px 0 2px 126px; }
+    #colores input { width: 38px; height: 28px; }
+    #grupos { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 4px; }
+    #grupos li { display: flex; gap: 4px; }
+    #grupos button { font: inherit; color: var(--texto); background: var(--control); border: 1px solid #3a2d5e; border-radius: 6px; cursor: pointer; min-height: 32px; }
+    #grupos button.elegir { flex: 1; text-align: left; padding: 4px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #grupos button.ver { width: 76px; font-size: 12px; color: var(--suave); }
+    #grupos li.activo button.elegir { border-color: var(--acento); color: #fff; }
+    #grupos li.oculto button.elegir { opacity: .5; }
+    #samples, #status { font-size: 12px; font-variant-numeric: tabular-nums; }
+    #aviso { color: #ffcf7a; font-size: 12px; }
+    #ir { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    #ir a { font-size: 12px; color: var(--suave); text-decoration: none; border: 1px solid #3a2d5e; border-radius: 5px; padding: 1px 6px; }
+    #ir a.activo { color: #fff; border-color: var(--acento); }
+    .barra {
+      position: fixed; z-index: 2; top: 16px; right: 16px; width: min(330px, calc(100vw - 32px));
+      padding: 8px; border: 1px solid var(--borde); border-radius: 10px; background: var(--panel); backdrop-filter: blur(8px);
+    }
+    .modos { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+    .modos button {
+      min-height: 40px; font: inherit; font-size: 13px; color: var(--texto); cursor: pointer;
+      background: var(--control); border: 1px solid #3a2d5e; border-radius: 8px;
+    }
+    .modos button.activo { border-color: var(--acento); background: #2a1d4a; color: #fff; }
+    .barra label { grid-template-columns: 96px 1fr; margin: 6px 0 0; }
+    #ayudaModo { font-size: 12px; margin: 6px 0 0; }
+    #hud {
+      position: fixed; z-index: 2; right: 16px; bottom: 16px; max-width: calc(100vw - 32px);
+      padding: 6px 10px; border: 1px solid var(--borde); border-radius: 8px; background: var(--panel);
+      font-size: 12px; font-variant-numeric: tabular-nums; color: var(--texto); pointer-events: none;
+    }
+    #fallo {
+      position: fixed; z-index: 3; top: 16px; left: 50%; transform: translateX(-50%);
+      max-width: min(560px, calc(100vw - 32px)); margin: 0; padding: 8px 12px;
+      border: 1px solid #ff8a7a; border-radius: 8px; background: rgba(60, 8, 12, .92);
+      color: #ffd9d3; font-size: 13px; overflow-wrap: anywhere;
+    }
+    @media (max-width: 760px) {
+      #info { top: auto; bottom: 12px; left: 12px; width: calc(100vw - 24px); max-height: 52vh; }
+      .barra { top: 12px; right: 12px; left: 12px; width: auto; }
+      #hud { display: none; }
+      label { grid-template-columns: 104px 1fr; }
+      #colores { margin-left: 112px; }
+      .tres { grid-template-columns: 104px repeat(3, 1fr); }
+    }
+    [hidden] { display: none !important; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.180.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.180.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <aside id="info">
+    <div class="cabecera">
+      <h1>Nebula Dust Engine</h1>
+      <button id="plegar" type="button" aria-expanded="true">Ocultar</button>
+    </div>
+    <div class="cuerpo">
+      <details open>
+        <summary>Escena</summary>
+        <label for="escena">Ejemplo <select id="escena"></select></label>
+        <div class="botones">
+          <button id="guardar" class="accion" type="button">Guardar JSON</button>
+          <button id="cargar" class="accion" type="button">Cargar JSON</button>
+          <button id="enlace" class="accion" type="button">Copiar enlace</button>
+          <button id="vaciar" class="accion" type="button">Vaciar</button>
+        </div>
+        <input id="fichero" type="file" accept=".json,application/json" hidden>
+      </details>
+
+      <details open>
+        <summary>Grupos</summary>
+        <ul id="grupos" aria-label="Grupos de polvo"></ul>
+        <div class="botones">
+          <button id="anadir" class="accion" type="button">Añadir</button>
+          <button id="duplicar" class="accion" type="button">Duplicar</button>
+          <button id="ocultar" class="accion" type="button">Ocultar</button>
+          <button id="borrar" class="accion" type="button">Borrar</button>
+        </div>
+      </details>
+
+      <details open>
+        <summary>Grupo seleccionado</summary>
+        <label for="nombre">Nombre <input id="nombre" type="text" maxlength="120"></label>
+        <label for="preset">Objeto <select id="preset"></select></label>
+        <p id="que"></p>
+        <label for="semillaTxt">Semilla <input id="semillaTxt" type="text" maxlength="200" spellcheck="false"></label>
+        <label for="motas">Motas <select id="motas"></select></label>
+        <label for="forma">Forma <select id="forma"></select></label>
+        <label for="paleta">Paleta <select id="paleta"></select></label>
+        <div id="colores" hidden>
+          <input type="color" aria-label="Color 1"><input type="color" aria-label="Color 2">
+          <input type="color" aria-label="Color 3"><input type="color" aria-label="Color 4">
+        </div>
+        <label for="tinte">Tinte <input id="tinte" type="color" value="#ffffff"></label>
+        <label for="perfil">Volumen <select id="perfil"></select></label>
+        <label for="mezcla">Mezcla <select id="mezcla"></select></label>
+        <label for="opacidad">Opacidad <input id="opacidad" type="range" min="0" max="1" step="0.01"></label>
+        <label for="escala">Tamaño de mota <input id="escala" type="range" min="0.2" max="3" step="0.01"></label>
+        <label for="maxpx">Tope de punto <input id="maxpx" type="range" min="0.5" max="16" step="0.1"></label>
+        <label for="tamGrupo">Tamaño del grupo <input id="tamGrupo" type="range" min="0.05" max="4" step="0.01"></label>
+        <div class="tres"><span>Posición</span>
+          <input id="posX" type="range" min="-4" max="4" step="0.01" aria-label="Posición X">
+          <input id="posY" type="range" min="-4" max="4" step="0.01" aria-label="Posición Y">
+          <input id="posZ" type="range" min="-4" max="4" step="0.01" aria-label="Posición Z">
+        </div>
+        <div class="tres"><span>Giro</span>
+          <input id="rotX" type="range" min="-180" max="180" step="1" aria-label="Giro X">
+          <input id="rotY" type="range" min="-180" max="180" step="1" aria-label="Giro Y">
+          <input id="rotZ" type="range" min="-180" max="180" step="1" aria-label="Giro Z">
+        </div>
+        <label for="orden">Orden de dibujo <input id="orden" type="range" min="0" max="10" step="1"></label>
+        <label for="capa">Capa <select id="capa">
+          <option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option>
+        </select></label>
+        <label for="flujo">Flujo <input id="flujo" type="range" min="0" max="4" step="0.01"></label>
+        <label for="movimiento">Turbulencia <input id="movimiento" type="range" min="0" max="1" step="0.01"></label>
+        <div id="bloqueExplosion" hidden>
+          <label for="evolucion">Explosión <input id="evolucion" type="range" min="0" max="1" step="0.001"></label>
+          <div class="botones"><button id="reiniciar" class="accion" type="button">Reiniciar la explosión</button></div>
+        </div>
+        <div class="botones">
+          <button id="semilla" class="accion" type="button">Otra semilla</button>
+          <button id="restablecer" class="accion" type="button">Restablecer</button>
+        </div>
+      </details>
+
+      <details>
+        <summary>Rendimiento y vista</summary>
+        <label for="granos">Granos reales <select id="granos"></select></label>
+        <label for="adaptativo">Si va lento <select id="adaptativo">
+          <option value="si">Quitar motas para ir fluido (con techo)</option>
+          <option value="no">Dibujarlas todas siempre</option>
+        </select></label>
+        <label for="fps">Tope de fps <select id="fps">
+          <option value="30">30</option>
+          <option value="60" selected>60</option>
+          <option value="120">120</option>
+          <option value="0">Sin tope</option>
+        </select></label>
+        <label for="resolucion">Resolución <select id="resolucion">
+          <option value="1" selected>Completa</option>
+          <option value="0.5">Media (cuatro veces menos píxeles)</option>
+        </select></label>
+        <label for="sorteo">Motas de menos de 0,5 px <select id="sorteo">
+          <option value="no" selected>Dibujarlas todas</option>
+          <option value="si">Sortearlas: misma luz, algo de grano</option>
+        </select></label>
+        <label for="giro">Giro automático <select id="giro">
+          <option value="si" selected>Sí</option>
+          <option value="no">No (quieto no gasta GPU)</option>
+        </select></label>
+        <label for="capaVista">Capas visibles <select id="capaVista">
+          <option value="todas" selected>Todas</option>
+          <option value="0">Solo la 0</option><option value="1">Solo la 1</option>
+          <option value="2">Solo la 2</option><option value="3">Solo la 3</option>
+        </select></label>
+        <label for="exposicion">Exposición <input id="exposicion" type="range" min="0.5" max="24" step="0.05"></label>
+        <p id="aviso" hidden></p>
+      </details>
+
+      <p id="samples"></p>
+      <p id="status"></p>
+      <nav id="ir" aria-label="Objetos sueltos"></nav>
+    </div>
+  </aside>
+
+  <div class="barra" role="toolbar" aria-label="Modo del ratón">
+    <div class="modos">
+      <button id="mGirar" type="button">Girar</button>
+      <button id="mSembrar" type="button">Sembrar</button>
+      <button id="mMover" type="button">Mover</button>
+      <button id="mTocar" type="button">Tocar</button>
+    </div>
+    <div id="opSembrar" hidden>
+      <label for="siembra">Qué sembrar <select id="siembra"></select></label>
+      <label for="tamSiembra">Tamaño <input id="tamSiembra" type="range" min="0.1" max="2" step="0.01" value="0.45"></label>
+    </div>
+    <div id="opMover" hidden>
+      <label for="gizmo">Gizmo <select id="gizmo">
+        <option value="translate" selected>Mover</option>
+        <option value="rotate">Girar</option>
+        <option value="scale">Escalar</option>
+      </select></label>
+    </div>
+    <div id="opTocar" hidden>
+      <label for="radioToque">Radio <input id="radioToque" type="range" min="0.05" max="1.5" step="0.01" value="0.3"></label>
+      <label for="fuerzaToque">Fuerza <input id="fuerzaToque" type="range" min="0.05" max="1.5" step="0.01" value="0.45"></label>
+    </div>
+    <p id="ayudaModo"></p>
+  </div>
+  <div id="hud" aria-live="off"></div>
+  <p id="fallo" role="alert" hidden></p>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
