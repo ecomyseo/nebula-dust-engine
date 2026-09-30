@@ -1,0 +1,946 @@
+/*
+ * Styles of the demo's panel and page.
+ *
+ * The panel part (.gui…) is adapted from guspira's css/gui.css and the page
+ * part (#panel, #buttons, .icon-button, body.ui-hidden, the phone layout) from
+ * css/styles.css of bumpy-metaballs-2026, both by Jaume Sanchez (@thespite):
+ *
+ *   https://github.com/spite/guspira                 MIT License, Copyright (c) 2026 Jaume Sanchez
+ *   https://github.com/spite/bumpy-metaballs-2026    MIT License, Copyright (c) 2022 thespite
+ *
+ *   Permission is hereby granted, free of charge, to any person obtaining a copy
+ *   of this software and associated documentation files (the "Software"), to deal
+ *   in the Software without restriction, including without limitation the rights
+ *   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ *   copies of the Software, and to permit persons to whom the Software is
+ *   furnished to do so, subject to the following conditions:
+ *
+ *   The above copyright notice and this permission notice shall be included in all
+ *   copies or substantial portions of the Software.
+ *
+ *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ *   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ *   SOFTWARE.
+ *
+ * The group list, the key table, the toast and the native range slider are this
+ * demo's own.
+ */
+
+/* ------------------------------------------------------------------ page */
+:root {
+  color-scheme: dark;
+  --accent: #ffa683;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  color: #eee;
+  font-family: "DM Sans", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.4em;
+  text-shadow: 0 -1px 0 rgba(0, 0, 0, 0.5);
+  background-color: #03030a;
+  overflow: hidden;
+}
+
+#container {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
+
+#container canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+a {
+  color: white;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+#panel {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  right: 10px;
+  z-index: 2;
+  width: 380px;
+  max-width: calc(100vw - 20px);
+}
+
+#buttons {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  right: calc(10px + 380px + 8px);
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+}
+
+/* 65px is the folded panel's height (20px padding either side of a 24px
+   title, plus a pixel of its rows), so the buttons line up with it. */
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 65px;
+  height: 65px;
+  border: none;
+  border-radius: 6px;
+  background: #2c2c2c;
+  color: #e0e0e0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.icon-button:hover {
+  background: #3e3e3e;
+  color: #fff;
+}
+
+.icon-button:active {
+  background: #333;
+}
+
+.icon-button:focus-visible {
+  outline: 2px solid #888;
+  outline-offset: 2px;
+}
+
+.icon-button[aria-pressed="true"] .when-off,
+.icon-button[aria-pressed="false"] .when-on {
+  display: none;
+}
+
+#randomize svg {
+  transition: transform 0.35s ease;
+}
+
+#randomize.turned svg {
+  transform: rotate(180deg);
+}
+
+/* The toggle stays, alone in the corner, or nothing could bring the rest back. */
+body.ui-hidden #panel,
+body.ui-hidden #buttons > :not(#ui-toggle),
+body.ui-hidden #toast {
+  display: none;
+}
+
+body.ui-hidden #buttons {
+  right: 10px;
+}
+
+body.ui-hidden #ui-toggle {
+  opacity: 0.4;
+}
+
+body.ui-hidden #ui-toggle:hover,
+body.ui-hidden #ui-toggle:focus-visible {
+  opacity: 1;
+}
+
+/* Status pills, top left: generating, saved, link copied; errors in red. */
+#status-area {
+  position: fixed;
+  z-index: 3;
+  left: 10px;
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: min(40em, calc(100vw - 20px));
+  pointer-events: none;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+#error {
+  border-radius: 8px;
+  background: rgba(70, 10, 12, 0.92);
+  color: #ffd9d3;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #randomize svg {
+    transition: none;
+  }
+}
+
+/* Touch devices leave fullscreen with the system gesture or a double tap. */
+@media (hover: none) and (pointer: coarse) {
+  #fullscreen[aria-pressed="true"] {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ panel */
+.gui {
+  --gui-bg: #2c2c2c;
+  --gui-fg: #e0e0e0;
+  --gui-muted: #888;
+  --gui-field-bg: #3e3e3e;
+  --gui-border: #555;
+  --gui-focus: #888;
+  --gui-accent: #ffffff;
+  --gui-btn-bg: #4a4a4a;
+  --gui-btn-hover: #5a5a5a;
+  --gui-btn-active: #333333;
+  --gui-track: #333333;
+  --gui-fill: #e0e0e0;
+  --gui-thumb: #ffffff;
+  --gui-check: var(--gui-bg);
+  --gui-font: "DM Sans", system-ui, sans-serif;
+  --gui-font-size: 13px;
+  --gui-padding: 20px;
+  --gui-gap: 8px;
+  --gui-row-height: 24px;
+  --gui-label-width: 140px;
+  --gui-radius: 4px;
+  --gui-panel-radius: 6px;
+  --gui-check-size: 16px;
+  --gui-track-height: 4px;
+  --gui-warn: #ff6b4a;
+  --gui-max-height: calc(100vh - 80px);
+  position: relative;
+  background-color: var(--gui-bg);
+  color: var(--gui-fg);
+  font-family: var(--gui-font);
+  font-size: var(--gui-font-size);
+  padding: var(--gui-padding);
+  border-radius: var(--gui-panel-radius);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  user-select: none;
+  display: none;
+}
+
+.gui.visible {
+  display: block;
+}
+
+.gui-title,
+.gui-section-title {
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+}
+
+.gui-title:focus-visible,
+.gui-section-title:focus-visible,
+.gui-tab-btn:focus-visible {
+  outline: 2px solid var(--gui-focus);
+  outline-offset: 2px;
+}
+
+.gui-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.gui-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gui-title-preset {
+  font-weight: 400;
+  color: var(--accent);
+}
+
+.gui-title-preset:not(:empty)::before {
+  content: " · ";
+}
+
+/* guspira draws its chevron as an SVG; here it is two borders, so the JS builds no SVG. */
+.gui-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  transition: transform 150ms ease-in-out;
+}
+
+.gui-chevron::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.gui-section-title .gui-chevron {
+  width: 10px;
+  height: 10px;
+}
+
+.gui-section-title .gui-chevron::before {
+  width: 5px;
+  height: 5px;
+}
+
+.gui.collapsed .gui-title > .gui-chevron {
+  transform: rotate(-90deg);
+}
+
+.gui-scroller {
+  max-height: var(--gui-max-height);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.gui-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.gui-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gui-gap);
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  border-top: 1px solid var(--gui-muted);
+  transition: opacity 100ms ease-in-out;
+}
+
+.gui-rows.visible {
+  height: auto;
+  overflow: visible;
+  margin-top: 12px;
+  padding-top: 12px;
+  opacity: 1;
+}
+
+.gui-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--gui-gap);
+  min-height: var(--gui-row-height);
+}
+
+.gui-row.disabled {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.gui-label {
+  opacity: 0.8;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A label that rerolls its control when clicked says so on hover (guspira). */
+.gui-label.gui-randomizable {
+  cursor: pointer;
+  text-decoration: underline dotted transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 120ms ease-in-out, opacity 120ms ease-in-out;
+}
+
+.gui-label.gui-randomizable:hover {
+  opacity: 1;
+  text-decoration-color: var(--gui-muted);
+}
+
+.gui-section.disabled {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+:where(.gui) :where(input, select, button, textarea) {
+  box-sizing: border-box;
+  height: var(--gui-row-height);
+  background: var(--gui-field-bg);
+  border: 1px solid var(--gui-border);
+  color: var(--gui-fg);
+  padding: 0 6px;
+  border-radius: var(--gui-radius);
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1;
+  outline: none;
+}
+
+.gui input:focus,
+.gui select:focus,
+.gui button:focus-visible {
+  border-color: var(--gui-focus);
+}
+
+.gui button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.gui input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--gui-check-size);
+  height: var(--gui-check-size);
+  padding: 0;
+  border: 1px solid var(--gui-border);
+  border-radius: var(--gui-radius);
+  background: var(--gui-field-bg);
+  cursor: pointer;
+}
+
+.gui input[type="checkbox"]:checked {
+  background: var(--gui-accent);
+  border-color: var(--gui-accent);
+}
+
+.gui input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 0.3em;
+  height: 0.62em;
+  border: solid var(--gui-check);
+  border-width: 0 2px 2px 0;
+  transform: translate(-50%, -50%) rotate(45deg) scale(0.6);
+  opacity: 0;
+  transition: opacity 90ms ease-in-out, transform 90ms ease-in-out;
+}
+
+.gui input[type="checkbox"]:checked::after {
+  opacity: 1;
+  transform: translate(-50%, -50%) rotate(45deg) scale(1);
+}
+
+.gui-control,
+.gui-select,
+.gui-input-text,
+.gui-color {
+  flex: 0 0 calc(100% - var(--gui-label-width));
+  min-width: 0;
+}
+
+.gui-color {
+  padding: 0;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.gui-color::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.gui-color::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.gui-segmented {
+  display: flex;
+}
+
+.gui-segment {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--gui-muted);
+  cursor: pointer;
+  border-radius: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gui-segment + .gui-segment {
+  margin-left: -1px;
+}
+
+.gui-segment:first-child {
+  border-radius: var(--gui-radius) 0 0 var(--gui-radius);
+}
+
+.gui-segment:last-child {
+  border-radius: 0 var(--gui-radius) var(--gui-radius) 0;
+}
+
+.gui-segment:hover {
+  color: var(--gui-fg);
+}
+
+.gui-segment.active {
+  background: var(--gui-btn-bg);
+  color: var(--gui-fg);
+  border-color: var(--gui-focus);
+  position: relative;
+  z-index: 1;
+}
+
+.gui-row.gui-row-block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+
+.gui-btn {
+  width: 100%;
+  cursor: pointer;
+  background: var(--gui-btn-bg);
+}
+
+.gui-btn:hover {
+  background: var(--gui-btn-hover);
+}
+
+.gui-btn:active {
+  background: var(--gui-btn-active);
+}
+
+.gui-btn-group {
+  display: flex;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.gui-btn-group .gui-btn {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+
+.gui-btn-group .gui-btn-mini {
+  flex: 0 0 auto;
+  padding: 0 9px;
+}
+
+/* The preset row: ← select →, the select taking what is left. */
+.gui-row.gui-compact {
+  gap: 4px;
+}
+
+.gui-row.gui-compact > .gui-select,
+.gui-row.gui-compact > .gui-input-text {
+  flex: 1 1 auto;
+}
+
+.gui-row.gui-compact > .gui-btn-mini {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0 9px;
+}
+
+/* Four color swatches sharing the control column. */
+.gui-colors {
+  display: flex;
+  gap: 4px;
+}
+
+.gui-colors .gui-color {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.gui-monitor {
+  flex: 0 0 auto;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  text-align: right;
+}
+
+.gui-monitor.gui-over {
+  color: var(--gui-warn);
+  opacity: 1;
+}
+
+.gui-slider-container {
+  display: flex;
+  align-items: center;
+  gap: var(--gui-gap);
+  flex: 0 0 calc(100% - var(--gui-label-width));
+  min-width: 0;
+}
+
+/* A native range styled like guspira's: a thin track filled up to the thumb. */
+.gui input[type="range"].gui-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--gui-row-height);
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  --fill: 50%;
+}
+
+.gui-slider::-webkit-slider-runnable-track {
+  height: var(--gui-track-height);
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--gui-fill) var(--fill), var(--gui-track) var(--fill));
+}
+
+.gui-slider::-moz-range-track {
+  height: var(--gui-track-height);
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--gui-fill) var(--fill), var(--gui-track) var(--fill));
+}
+
+.gui-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--gui-thumb);
+  border: none;
+}
+
+.gui-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--gui-thumb);
+  border: none;
+}
+
+.gui-slider-val,
+.gui-slider-edit {
+  flex: 0 0 auto;
+  width: 52px;
+  text-align: right;
+  opacity: 0.7;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.gui-slider-val {
+  cursor: text;
+}
+
+.gui-slider-val:hover {
+  opacity: 1;
+}
+
+.gui .gui-slider-edit {
+  opacity: 1;
+  padding: 2px 4px;
+}
+
+.gui-text {
+  width: 100%;
+  opacity: 0.75;
+  line-height: 1.4;
+  font-size: 12px;
+  white-space: normal;
+}
+
+.gui-text a {
+  color: inherit;
+}
+
+.gui-row:has(.gui-separator) {
+  min-height: 12px;
+  height: 12px;
+}
+
+.gui-separator {
+  background: var(--gui-muted);
+  opacity: 0.5;
+  height: 1px;
+  width: 100%;
+}
+
+.gui-tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.gui-tab-btn {
+  flex: 1 1 auto;
+  min-width: 46px;
+  padding: 5px 4px;
+  font-size: 11px;
+  background: var(--gui-field-bg);
+  border: 1px solid var(--gui-border);
+  border-bottom: none;
+  border-radius: var(--gui-radius) var(--gui-radius) 0 0;
+  color: var(--gui-muted);
+  cursor: pointer;
+}
+
+.gui-tab-btn:hover {
+  color: var(--gui-fg);
+}
+
+.gui-tab-btn.active {
+  background: var(--gui-bg);
+  color: var(--gui-fg);
+}
+
+.gui-tab-panel {
+  display: none;
+}
+
+.gui-tab-panel.active {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gui-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gui-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--gui-muted);
+}
+
+.gui-section-title.gui-collapsible {
+  cursor: pointer;
+}
+
+.gui-section-title.gui-collapsible:hover {
+  color: var(--gui-fg);
+}
+
+.gui-section:not(.open) .gui-section-title .gui-chevron {
+  transform: rotate(-90deg);
+}
+
+.gui-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gui-gap);
+}
+
+.gui-section:not(.open) > .gui-section-body {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gui-rows,
+  .gui-chevron {
+    transition: none;
+  }
+}
+
+/* ------------------------------------------------------------------ the demo's own rows */
+.group-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.group-list li {
+  display: flex;
+  gap: 3px;
+}
+
+.group-list .group-pick {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  background: var(--gui-field-bg);
+}
+
+.group-list .group-eye {
+  flex: 0 0 auto;
+  width: 64px;
+  font-size: 11px;
+  color: var(--gui-muted);
+  cursor: pointer;
+}
+
+.group-list li.active .group-pick {
+  border-color: var(--gui-fg);
+  color: #fff;
+}
+
+.group-list li.off .group-pick {
+  opacity: 0.5;
+}
+
+/* The stats rows, as bumpy-metaballs': the reading in bold, its range dimmed. */
+#panel .stat-value {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+#panel .stat-value.stat-warn {
+  color: #ff6b5a;
+}
+
+#panel .stat-range {
+  flex: 0 0 7.5em;
+  white-space: nowrap;
+  text-align: right;
+  font-size: 11px;
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The help at the top of the panel, as bumpy-metaballs' #help. */
+#help {
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.85;
+}
+
+#help p {
+  margin-bottom: 8px;
+}
+
+#help .credits {
+  opacity: 0.7;
+}
+
+.keys {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.keys td {
+  padding: 2px 0;
+  vertical-align: top;
+  opacity: 0.8;
+}
+
+.keys td:first-child {
+  width: 96px;
+  opacity: 1;
+  white-space: nowrap;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0 4px;
+  border: 1px solid var(--gui-border, #555);
+  border-radius: 3px;
+  font: 11px/16px ui-monospace, monospace;
+  text-align: center;
+  text-shadow: none;
+}
+
+/* ------------------------------------------------------------------ phones */
+@media (max-width: 600px) {
+  #panel {
+    width: auto;
+    max-width: none;
+    top: auto;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    left: 10px;
+    right: 10px;
+  }
+
+  #panel .gui {
+    --gui-max-height: 60vh;
+    --gui-padding: 14px;
+    --gui-label-width: 120px;
+  }
+
+  #buttons {
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+  }
+
+  .icon-button {
+    width: 52px;
+    height: 52px;
+  }
+
+  body.ui-hidden #buttons {
+    left: auto;
+    right: 10px;
+    transform: none;
+  }
+
+  #status-area {
+    left: 50%;
+    top: calc(10px + env(safe-area-inset-top, 0px) + 60px);
+    transform: translateX(-50%);
+    align-items: center;
+  }
+}

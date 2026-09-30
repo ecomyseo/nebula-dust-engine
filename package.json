@@ -1,7 +1,7 @@
 {
   "name": "nebula-dust-engine",
   "version": "0.4.0",
-  "description": "Procedural nebula dust and particle groups for three.js: seeded, editable, pickable and touchable clouds of up to 4 million GPU samples with LOD and light conservation.",
+  "description": "Procedural nebula dust, particle groups and rotating outflows for three.js: seeded, editable, pickable and touchable clouds of up to 4 million GPU samples with LOD and light conservation.",
   "type": "module",
   "main": "./src/all.js",
   "module": "./src/all.js",
@@ -12,6 +12,7 @@
     "./system": "./src/system.js",
     "./examples": "./src/examples.js",
     "./gpu-profile": "./src/gpu-profile.js",
+    "./outflow": "./src/outflow.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -23,8 +24,9 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "check": "node --check ./src/index.js && node --check ./src/gpu-profile.js && node --check ./src/presets.js && node --check ./src/system.js && node --check ./src/examples.js && node --check ./src/all.js",
-    "test": "npm run check && node ./test/engine.mjs && node ./test/gpu-profile.mjs && node ./test/phenomena.mjs && node ./test/no-radial-combs.mjs && node ./test/light-conservation.mjs && node --expose-gc ./test/system.mjs && node ./test/glsl-versions.mjs",
+    "check": "node --check ./src/index.js && node --check ./src/gpu-profile.js && node --check ./src/presets.js && node --check ./src/system.js && node --check ./src/examples.js && node --check ./src/all.js && node --check ./src/outflow.js && node --check ./demo/main.js && node --check ./demo/panel.js && node --check ./demo/hash.js && node --check ./demo/post.js",
+    "test": "npm run check && node ./test/engine.mjs && node ./test/gpu-profile.mjs && node ./test/phenomena.mjs && node ./test/no-radial-combs.mjs && node ./test/demo-static.mjs && node ./test/light-conservation.mjs && node --expose-gc ./test/system.mjs && node ./test/glsl-versions.mjs && node ./test/outflow.mjs && node ./test/demo-dom.mjs",
+    "test:mutants": "node ./test/demo-dom.mjs --autoprueba",
     "screenshots": "python ./bench/capturas.py"
   },
   "engines": {
@@ -57,7 +59,7 @@
     "editor"
   ],
   "author": "Gustavo Martos Ferri",
-  "homepage": "https://github.com/ecomyseo/nebula-dust-engine#readme",
+  "homepage": "https://orbitas.gmartos.es/nebula-dust-engine/demo/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ecomyseo/nebula-dust-engine.git"
